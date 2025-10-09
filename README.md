@@ -16,12 +16,12 @@ This repository grew out of the _Tracers, Regularity, and Computation_ working g
 
 We evolve the dimensionless passive-scalar perturbation `θ(x, y, t)` on a 2-D periodic square domain `[-L/2, L/2)^2`.  With mean gradient forcing:
 
-\[
+$$
 \frac{\partial \theta}{\partial t} + \mathbf{u} \cdot \nabla \theta
     = \kappa \nabla^2 \theta - \mathbf{u} \cdot \mathbf{G},
-\]
+$$
 
-where `G = (G_x, G_y)` is the imposed large-scale gradient.  The full scalar is `S = G·x + θ`.  Velocity fields are synthetic, either Fourier-based (random phases shaped to a prescribed spectrum) or wavelet-based (divergence-free streamfunction built via scale coefficients).
+where $\mathbf{G} = (G_x, G_y)$ is the imposed large-scale gradient.  The full scalar is $\Theta = \mathbf{G}·\mathbf{x} + \theta$, but we only ever use $\theta$.  Velocity fields are synthetic, either Fourier-based (random phases shaped to a prescribed spectrum) or wavelet-based (divergence-free streamfunction built via scale coefficients).
 
 ## 3. Numerical method
 
@@ -37,12 +37,12 @@ where `G = (G_x, G_y)` is the imposed large-scale gradient.  The full scalar is 
 
 We decompose the equation into linear `Lθ = κ∇²θ` and nonlinear `N(θ) = -u·∇θ - u·G`.  ETDRK4 integrates
 
-\[
+$$
 \theta^{n+1} = e^{L \Delta t} \theta^n +
    \varphi_1(L \Delta t) N(\theta^n) +
    \varphi_2(L \Delta t) [N(a) + N(b)] +
    \varphi_3(L \Delta t) N(c),
-\]
+$$
 
 where `a, b, c` are RK-like stages.  The `φ` functions are approximated via contour integrals (Kassam & Trefethen 2005).  In Fourier space the linear operator is diagonal, so exponentials are cheap.
 
@@ -191,51 +191,6 @@ PY
 
 If `pyfftw` is absent, the toolkit falls back to NumPy FFTs automatically.
 
-## 9. Repository housekeeping
-
-- Removed legacy notebooks/scripts in the root directory (`example_scalar_evo.ipynb`, `wavelet_velocity_field.ipynb`) and the older monolithic scripts (`turbulent_scalar_sim.py`, `wavelet_velocity_field.py`) in favour of `scalar_advection/`.
-- Added a `.gitignore` tailored for Python/FFT-heavy projects (see below).
-
-## 10. `.gitignore`
-
-```
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-build/
-dist/
-*.egg-info/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# FFTW wisdom/cache (if saved)
-fftw_wisdom*
-
-# OS junk
-.DS_Store
-Thumbs.db
-```
-
-## 11. Repository naming ideas
-
-Inspired by AstroGMT & tracing geometry:
-
-1. **AstroGMT-ScalarLab**
-2. **TracerGMT**
-3. **GeoFlowScalars**
-4. **GMTurbulence**
-5. **SimonsTracerToolkit**
-6. **FlowGeometrySim**
-7. **FractalTracerLab**
-
-Pick whichever resonates most with the working group branding.
-
 ---
 
-_Maintained by Drummond Fielding’s Tracers, Regularity, and Computation subgroup (AstroGMT / Simons Initiative on the Geometry of Flows)._ 
+_Maintained by Drummond Fielding’s Tracers, Regularity, and Computation subgroup (AstroGMT / Simons Initiative on the Geometry of Flows)._

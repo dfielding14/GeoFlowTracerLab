@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter artifacts
+.ipynb_checkpoints/
+
+# FFTW wisdom/cache
+auto_fftw_wisdom*
+fftw_wisdom*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs / cache
+*.log
