@@ -69,21 +69,19 @@ def box_counting(
         while s <= max_box:
             sizes.append(s)
             s *= 2
-        if sizes[-1] != max_box:
-            if sizes[-1] < max_box:
-                sizes.append(max_box)
-        box_sizes_arr = np.array(sorted(set(sizes)), dtype=int)
+        if sizes[-1] < max_box:
+            sizes.append(max_box)
+        box_sizes_arr = np.array(sizes, dtype=int)
     else:
         box_sizes_arr = np.array(sorted(set(int(s) for s in box_sizes if s >= 1)), dtype=int)
         box_sizes_arr = box_sizes_arr[(box_sizes_arr >= min_box) & (box_sizes_arr <= max_box)]
 
     counts = []
-    mask_float = mask_bool
     for size in box_sizes_arr:
         nrows = int(np.ceil(h / size))
         ncols = int(np.ceil(w / size))
         padded = np.zeros((nrows * size, ncols * size), dtype=bool)
-        padded[:h, :w] = mask_float
+        padded[:h, :w] = mask_bool
         reshaped = padded.reshape(nrows, size, ncols, size)
         occupancy = reshaped.any(axis=(1, 3))
         counts.append(int(np.count_nonzero(occupancy)))
@@ -105,12 +103,9 @@ def box_counting(
     if np.any(mask_fit):
         inv_subset = inv_sizes[mask_fit]
         counts_subset = counts_arr[mask_fit]
-        order = np.argsort(inv_subset)
-        inv_sorted = inv_subset[order]
-        counts_sorted = counts_subset[order]
         fit = best_powerlaw_fit(
-            inv_sorted,
-            counts_sorted,
+            inv_subset,
+            counts_subset,
             min_points=fit_min_points,
             min_decades=fit_min_decades,
         )
