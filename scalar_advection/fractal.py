@@ -110,7 +110,7 @@ def box_counting(
             min_decades=fit_min_decades,
         )
         if fit is not None:
-            sel_indices = np.flatnonzero(mask_fit)[order]
+            sel_indices = np.flatnonzero(mask_fit)
             subset = sel_indices[fit.i:fit.j]
             if subset.size:
                 fit_indices = (int(subset.min()), int(subset.max()) + 1)
