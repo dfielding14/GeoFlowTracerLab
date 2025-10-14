@@ -103,8 +103,9 @@ def scalar_power_spectrum(
         data = _subtract_linear_trend(data, grid, gradient=mean_grad)
     elif subtract_mean:
         data = data - data.mean()
+    ny, nx = data.shape
 
-    field_hat = fft2(data)
+    field_hat = fft2(data) / (nx * ny) ** 2
     power = np.abs(field_hat) ** 2
 
     return _binning_helper(grid.k_norm, power, kmin=1.0, kmax=grid.N // 2 + 1)
