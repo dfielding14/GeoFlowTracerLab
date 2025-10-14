@@ -30,6 +30,10 @@ class VelocityConfig:
     kmax: Optional[float] = None
     taper_width: float = 0.0
     precision: str = "auto"
+    # included here to make sure to generate a velocity field 
+    # which is compressive/solenoidal according to the discretization
+    # that is relevant to the solver being used
+    method: str = "spectral"
 
 
 class VelocityFieldGenerator:
@@ -39,6 +43,17 @@ class VelocityFieldGenerator:
         self.grid = grid
 
     def generate(self, config: VelocityConfig) -> Tuple[np.ndarray, np.ndarray]:
+        if config.method.lower() == "spectral":
+            return self.generate_spectral(config)
+        elif config.method.lower() == "finite_volume":
+            return self.generate_finite_volume(config)
+        else:
+            raise ValueError("method must be 'spectral' or 'finite_volume'")
+
+    def generate_spectral(self, config: VelocityConfig) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate a spectral velocity field based on the provided configuration.
+        """
         if config.precision == "auto":
             base_dtype = self.grid.dtype
             dtype = np.float32 if base_dtype == np.float32 else np.float64
@@ -101,6 +116,40 @@ class VelocityFieldGenerator:
 
         ux = ifft2(ux_hat).real.astype(dtype)
         uy = ifft2(uy_hat).real.astype(dtype)
+
+        ur = np.sqrt(np.mean(ux**2 + uy**2))
+        if ur > 0:
+            s = config.urms / ur
+            ux *= s
+            uy *= s
+
+        return ux, uy
+
+    def generate_finite_volume(self, config: VelocityConfig) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate a finite volume velocity field based on the provided configuration.
+        """
+        if config.precision == "auto":
+            base_dtype = self.grid.dtype
+            dtype = np.float32 if base_dtype == np.float32 else np.float64
+        elif config.precision == "float32":
+            dtype = np.float32
+        elif config.precision == "float64":
+            dtype = np.float64
+        else:
+            raise ValueError("precision must be 'auto', 'float32', or 'float64'")
+
+        cdtype = np.complex64 if dtype == np.float32 else np.complex128
+        N = self.grid.N
+
+        rng = np.random.default_rng(config.seed)
+        xi = rng.normal(size=(N, N)).astype(dtype)
+        az_hat = fft2(xi).astype(cdtype)
+        amp = self._spectral_amplitude(config.beta+2, dtype)
+        az_hat *= amp
+        az = ifft2(az_hat).real.astype(dtype)
+        uy =     np.roll(az, -1, axis=1) - np.roll(az, 1, axis=1)
+        ux = -1*(np.roll(az, -1, axis=0) - np.roll(az, 1, axis=0))
 
         ur = np.sqrt(np.mean(ux**2 + uy**2))
         if ur > 0:
