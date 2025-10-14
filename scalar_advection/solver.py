@@ -270,8 +270,56 @@ class ScalarAdvectionDiffusionSolver:
     ) -> Tuple[np.ndarray, SimulationDiagnostics]:
         
         self.phi = theta0.copy()
+
+        snapshot_dir = None
+        snapshot_count = 0
+        if self.config.save_to_disk:
+            snapshot_dir = self.config.save_dir or self._auto_snapshot_dir()
+            os.makedirs(snapshot_dir, exist_ok=True)
+
+        self.diagnostics.times = np.append(self.diagnostics.times, 0.0)
+        if self.config.save_every is not None:
+            if self.config.save_to_disk and snapshot_dir:
+                np.save(os.path.join(snapshot_dir, "theta_00000_t0.0000.npy"), theta0)
+            else:
+                self.diagnostics.snapshots.append(theta0.copy())
+
+        frame_step = None
+        if self.config.output_frames and self.config.frame_interval is not None:
+            frame_step = max(1, int(round(self.config.frame_interval / self.dt)))
+
+
         for n in range(1, self.nsteps + 1):
             self.single_iteration(self.dt)
+
+            tnow = n * self.dt
+            if self.config.save_every is not None and (n % self.config.save_every == 0 or n == self.nsteps):
+                theta_snapshot = self.phi.copy()
+                if self.config.save_to_disk and snapshot_dir:
+                    filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{tnow:.4f}.npy")
+                    np.save(filename, theta_snapshot)
+                    if snapshot_count == 0:
+                        metadata = {
+                            "N": self.grid.N,
+                            "L": self.grid.L,
+                            "dt": self.dt,
+                            "kappa": self.kappa,
+                            "peclet": self.config.peclet,
+                            "mean_grad": self.config.mean_grad,
+                            "t_end": self.config.t_end,
+                            "save_every": self.config.save_every,
+                        }
+                        np.save(os.path.join(snapshot_dir, "metadata.npy"), metadata)
+                    snapshot_count += 1
+                else:
+                    self.diagnostics.snapshots.append(theta_snapshot)
+                self.diagnostics.times = np.append(self.diagnostics.times, tnow)
+
+            if frame_step is not None and (n % frame_step == 0 or n == self.nsteps):
+                self.diagnostics.frames.append(self.phi.copy())
+
+            if self.verbose and n % max(1, self.nsteps // 10) == 0:
+                print(f"  Step {n}/{self.nsteps} (t={tnow:.3f}/{self.t_end:.3f})")
 
         return self.phi, self.diagnostics
 
