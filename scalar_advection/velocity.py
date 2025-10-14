@@ -146,7 +146,8 @@ class VelocityFieldGenerator:
         xi = rng.normal(size=(N, N)).astype(dtype)
         az_hat = fft2(xi).astype(cdtype)
         amp = self._spectral_amplitude(config.beta+2, dtype)
-        az_hat *= amp
+        window = self._compute_band_window(config.kmin, config.kmax, config.taper_width, dtype)
+        az_hat *= amp * window
         az = ifft2(az_hat).real.astype(dtype)
         uy =     np.roll(az, -1, axis=1) - np.roll(az, 1, axis=1)
         ux = -1*(np.roll(az, -1, axis=0) - np.roll(az, 1, axis=0))
