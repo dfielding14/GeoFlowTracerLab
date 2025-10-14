@@ -46,9 +46,13 @@ def _binning_helper(
     if kmax is None:
         kmax = np.floor(np.max(ks))
 
-    kbins = np.geomspace(kmin, kmax, num=N//2 + 1)
+    kbins = find_ell_bin_edges(kmin, kmax, n_ell_bins=int(kmax - kmin))
     kcs = 0.5 * (kbins[:-1] + kbins[1:])
-    dk = np.diff(kbins)
+    dk = kbins[1:] - kbins[:-1]
+
+    #kbins = np.geomspace(kmin, kmax, num=N//2 + 1)
+    #kcs = 0.5 * (kbins[:-1] + kbins[1:])
+    #dk = np.diff(kbins)
 
     (E1d,be) = np.histogram(ks.flatten(), bins=kbins, weights=Es.flatten())
     E1d /= dk
@@ -107,8 +111,7 @@ def scalar_power_spectrum(
 
 
 def plot_scalar_spectrum(
-    k: np.ndarray,
-    E: np.ndarray,
+    spec: Spectrum,
     *,
     fname: str | None = None,
     title: str | None = None,
@@ -147,8 +150,8 @@ def plot_scalar_spectrum(
     matplotlib.axes.Axes
         Axes containing the plot.
     """
-    k = np.asarray(k)
-    E = np.asarray(E)
+    k = spec.k
+    E = spec.Pk
     if ax is None:
         fig, ax = plt.subplots(figsize=(7.0, 4.8), dpi=140)
     else:
@@ -233,7 +236,7 @@ def kinetic_energy_spectrum(
 
 
 def plot_energy_spectrum(
-    spec: Dict[str, np.ndarray],
+    spec: Spectrum,
     fname: str | None = None,
     title: str | None = None,
     *,
@@ -245,8 +248,8 @@ def plot_energy_spectrum(
     """
     Plot E(k) vs k and optionally overlay the best-fit power-law segment.
     """
-    k = spec["k"]
-    E = spec["E"]
+    k = spec.k
+    E = spec.Pk
 
     fig, ax = plt.subplots(figsize=(8.0, 5.2), dpi=140)
     (line,) = ax.loglog(k, E, lw=1.8, alpha=0.9, label=label)
