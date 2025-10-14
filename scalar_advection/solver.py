@@ -144,7 +144,11 @@ class ScalarAdvectionDiffusionSolver:
         if config.method.lower() == "spectral":
             return self.spectral_solver(theta0)
         elif config.method.lower() == "finite_volume":
-            raise NotImplementedError("Finite volume method not yet implemented")
+            self.vx_int = 0.5*(self.uy + np.roll(self.uy,1,axis=0))
+            self.vy_int = 0.5*(self.ux + np.roll(self.ux,1,axis=1))
+            self.order = 1
+            self.FOFC = False
+            return self.fv_solver(theta0)
         else:
             raise ValueError("Method must be 'spectral' or 'finite_volume'")
         
@@ -253,6 +257,69 @@ class ScalarAdvectionDiffusionSolver:
 
         return theta_final, self.diagnostics
 
+    def fv_solver(
+        self,
+        theta0: np.ndarray
+    ) -> Tuple[np.ndarray, SimulationDiagnostics]:
+        
+        self.phi = theta0.copy()
+        for n in range(1, self.nsteps + 1):
+            self.single_iteration(self.dt)
+
+        return self.phi, self.diagnostics
+
+    def single_iteration(self, dt):
+        """
+        Perform a single iteration of the advection equation
+        """
+        # use predictor corrector scheme if order > 1
+        if (self.order > 1):
+            self.reconstruct(self.phi, 1, "x")
+            self.reconstruct(self.phi, 1, "y")
+            # take half step forward
+            (F1, G1) = self.calc_fluxes(dt/2)
+            sdt2 = self.phi + self.flux_div(F1, G1)
+
+            # reconstruct again
+            self.reconstruct(sdt2, self.order, "x")
+            self.reconstruct(sdt2, self.order, "y")
+            (F2, G2) = self.calc_fluxes(dt)
+
+            if self.FOFC:
+                # if using FOFC take a trial full step
+                s_tmp = self.phi + self.flux_div(F2, G2)
+                # identify where fluxes lead to negative values
+                mask = (s_tmp < 0)
+                #if self.vel_opt == "sol":
+                #    # if velcoity field is incompressible
+                #    # also identify where scalar is too large
+                #    # TODO: this should be dependent on initial
+                #    # conditions and it isn't right now
+                #    mask = np.logical_or(mask, (s_tmp > 1))
+                if np.any(mask):
+                    # construct mask for fluxes
+                    maskF = np.logical_or(mask, np.roll(mask,1,axis=0))
+                    maskG = np.logical_or(mask, np.roll(mask,1,axis=1))
+                    # make sure to multiply by 2 because the first-order fluxes
+                    # were constructed for the half time step
+                    F2[maskF] = 2*F1[maskF]
+                    G2[maskG] = 2*G1[maskG]
+                    self.phi += self.flux_div(F2, G2)
+                else:
+                    # if no bad values, take full step
+                    self.phi = s_tmp
+            else:
+                # take full step forward
+                self.phi += self.flux_div(F2, G2)
+        else:
+            # perform reconstruction "donor cell" reconstruction
+            self.reconstruct(self.phi, 1, "x")
+            self.reconstruct(self.phi, 1, "y")
+
+            # take one forward euler/RK1 step
+            (F,G) = self.calc_fluxes(dt)
+            self.phi += self.flux_div(F,G)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -292,6 +359,9 @@ class ScalarAdvectionDiffusionSolver:
         self.nsteps = int(np.ceil(t_end / dt))
         self.dt = t_end / self.nsteps  # adjust to land exactly on t_end
 
+    # ------------------------------------------------------------------
+    # Spectral solver helpers
+    # ------------------------------------------------------------------
     def _nonlinear_term(
         self,
         theta_hat: np.ndarray,
@@ -323,6 +393,65 @@ class ScalarAdvectionDiffusionSolver:
             np.mean((-4.0 - 3.0 * LR - LR**2 + np.exp(LR) * (4.0 - LR)) / (LR**3), axis=-1)
         )
         return E, E2, Q, f1, f2, f3
+
+    # ------------------------------------------------------------------
+    # Finite volume solver helpers
+    # ------------------------------------------------------------------
+    def reconstruct(self, s, order, direction):
+        """
+        Technically these are both the reconstructions and the 'Riemann' solvers
+        """
+        # first reconstruct, either first or second order
+        if direction == "x":
+            ax = 0
+        elif direction == "y":
+            ax = 1
+        else:
+            raise ValueError("Invalid direction")
+        
+        if order == 1:
+            (sr,sl) = (s,np.roll(s,1,axis=ax))
+        elif order == 2:
+            # Athena 08 paper Eq 38 for TVD reconstruction
+            dsL = s - np.roll(s,1,axis=ax)
+            dsR = np.roll(s,-1,axis=ax) - s
+            dsC = (np.roll(s,-1,axis=ax) - np.roll(s,1,axis=ax))/2
+            ds = np.sign(dsC)*np.minimum(2*np.minimum(np.abs(dsL),np.abs(dsR)), np.abs(dsC))
+            sr = s - ds/2
+            sl = np.roll(s + ds/2, 1,axis=ax)
+        else:
+            raise ValueError("Invalid x-order")
+
+        # then apply the "Riemann solver" based on velocity
+        if direction == "x":
+            self.s_intx = sr*(self.vx_int < 0) + sl*(self.vx_int > 0) + 0.5*(sr+sl)*(self.vx_int == 0)
+        elif direction == "y":
+            self.s_inty = sr*(self.vy_int < 0) + sl*(self.vy_int > 0) + 0.5*(sr+sl)*(self.vy_int == 0)
+
+    def calc_fluxes(self, dt):
+        """
+        Calculate the fluxes of the scalar field
+        """
+        # construct fluxes
+        F = -1*dt*self.s_intx*self.vx_int
+        G = -1*dt*self.s_inty*self.vy_int
+
+        if self.kappa > 0:
+            # add diffusion fluxes
+            F += self.kappa*dt*(self.phi - np.roll(self.phi,1,axis=0))/self.grid.dx
+            G += self.kappa*dt*(self.phi - np.roll(self.phi,1,axis=1))/self.grid.dx
+
+        return F, G
+
+    def flux_div(self, F, G):
+        """
+        Calculate the flux divergence of the scalar field
+        """
+        # calculate flux divergences
+        Fdiff = (np.roll(F,-1,axis=0) - F)/self.grid.dx
+        Gdiff = (np.roll(G,-1,axis=1) - G)/self.grid.dx
+
+        return Fdiff + Gdiff
 
     @staticmethod
     def _auto_snapshot_dir() -> str:
