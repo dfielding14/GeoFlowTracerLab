@@ -40,6 +40,7 @@ class ScalarConfig:
     frame_interval: Optional[float] = None
     save_to_disk: bool = False
     save_dir: Optional[str] = None
+    method: str = "spectral"
     integrator: str = "etdrk4"
 
 
@@ -128,112 +129,129 @@ class ScalarAdvectionDiffusionSolver:
         verbose: bool = True,
     ) -> Tuple[np.ndarray, SimulationDiagnostics]:
         theta0 = np.asarray(theta0, dtype=self.dtype)
-        ux = np.asarray(ux, dtype=self.dtype)
-        uy = np.asarray(uy, dtype=self.dtype)
+        self.ux = np.asarray(ux, dtype=self.dtype)
+        self.uy = np.asarray(uy, dtype=self.dtype)
+        self.config = config
+        self.verbose = verbose
 
-        dt, nsteps, kappa, t_end = self._resolve_time_controls(theta0, ux, uy, config)
-        diagnostics = SimulationDiagnostics(dt=dt, kappa=kappa, n_steps=nsteps)
+        self._resolve_time_controls(theta0, ux, uy, config)
+        self.diagnostics = SimulationDiagnostics(dt=self.dt,
+                                            kappa=self.kappa,
+                                            n_steps=self.nsteps)
         if config.output_frames:
-            diagnostics.frames = []
+            self.diagnostics.frames = []
+        
+        if config.method.lower() == "spectral":
+            return self.spectral_solver(theta0)
+        elif config.method.lower() == "finite_volume":
+            raise NotImplementedError("Finite volume method not yet implemented")
+        else:
+            raise ValueError("Method must be 'spectral' or 'finite_volume'")
+        
+
+    def spectral_solver(
+        self,
+        theta0:np.ndarray
+    ) -> Tuple[np.ndarray, SimulationDiagnostics]:
 
         theta_hat = fft2(theta0).astype(self.cdtype)
-        Llin = -kappa * self.grid.k2
+        Llin = -self.kappa * self.grid.k2
 
-        Gx, Gy = config.mean_grad
+        Gx, Gy = self.config.mean_grad
         if Gx != 0.0 or Gy != 0.0:
-            F = -(ux * Gx + uy * Gy)
+            F = -(self.ux * Gx + self.uy * Gy)
             F_hat = fft2(F).astype(self.cdtype)
         else:
             F_hat = None
 
-        integrator = (config.integrator or "etdrk4").lower()
+        integrator = (self.config.integrator or "etdrk4").lower()
         if integrator not in {"etdrk4", "rk4", "heun"}:
             raise ValueError("integrator must be 'etdrk4', 'rk4', or 'heun'")
 
         if integrator == "etdrk4":
-            E, E2, Q, f1, f2, f3 = self._etdrk4_coeffs(Llin, dt)
+            E, E2, Q, f1, f2, f3 = self._etdrk4_coeffs(Llin, self.dt)
 
         def rhs(theta_hat_state: np.ndarray) -> np.ndarray:
-            return Llin * theta_hat_state + self._nonlinear_term(theta_hat_state, ux, uy, F_hat)
+            return Llin * theta_hat_state + self._nonlinear_term(theta_hat_state, self.ux, self.uy, F_hat)
 
         snapshot_dir = None
         snapshot_count = 0
-        if config.save_to_disk:
-            snapshot_dir = config.save_dir or self._auto_snapshot_dir()
+        if self.config.save_to_disk:
+            snapshot_dir = self.config.save_dir or self._auto_snapshot_dir()
             os.makedirs(snapshot_dir, exist_ok=True)
 
-        diagnostics.times = np.append(diagnostics.times, 0.0)
-        if config.save_every is not None:
-            if config.save_to_disk and snapshot_dir:
+        self.diagnostics.times = np.append(self.diagnostics.times, 0.0)
+        if self.config.save_every is not None:
+            if self.config.save_to_disk and snapshot_dir:
                 np.save(os.path.join(snapshot_dir, "theta_00000_t0.0000.npy"), theta0)
             else:
-                diagnostics.snapshots.append(theta0.copy())
+                self.diagnostics.snapshots.append(theta0.copy())
 
         frame_step = None
-        if config.output_frames and config.frame_interval is not None:
-            frame_step = max(1, int(round(config.frame_interval / dt)))
+        if self.config.output_frames and self.config.frame_interval is not None:
+            frame_step = max(1, int(round(self.config.frame_interval / self.dt)))
 
-        for n in range(1, nsteps + 1):
+        for n in range(1, self.nsteps + 1):
             if integrator == "etdrk4":
-                Nv = self._nonlinear_term(theta_hat, ux, uy, F_hat)
+                Nv = self._nonlinear_term(theta_hat, self.ux, self.uy, F_hat)
                 a_hat = E2 * theta_hat + Q * Nv
-                Na = self._nonlinear_term(a_hat, ux, uy, F_hat)
+                Na = self._nonlinear_term(a_hat, self.ux, self.uy, F_hat)
 
                 b_hat = E2 * theta_hat + Q * Na
-                Nb = self._nonlinear_term(b_hat, ux, uy, F_hat)
+                Nb = self._nonlinear_term(b_hat, self.ux, self.uy, F_hat)
 
                 c_hat = E2 * a_hat + Q * (2.0 * Nb - Nv)
-                Nc = self._nonlinear_term(c_hat, ux, uy, F_hat)
+                Nc = self._nonlinear_term(c_hat, self.ux, self.uy, F_hat)
 
                 theta_hat = E * theta_hat + f1 * Nv + 2.0 * f2 * (Na + Nb) + f3 * Nc
             elif integrator == "rk4":
                 k1 = rhs(theta_hat)
-                k2 = rhs(theta_hat + 0.5 * dt * k1)
-                k3 = rhs(theta_hat + 0.5 * dt * k2)
-                k4 = rhs(theta_hat + dt * k3)
-                theta_hat = theta_hat + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+                k2 = rhs(theta_hat + 0.5 * self.dt * k1)
+                k3 = rhs(theta_hat + 0.5 * self.dt * k2)
+                k4 = rhs(theta_hat + self.dt * k3)
+                theta_hat = theta_hat + (self.dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
             else:  # Heun / RK2
                 k1 = rhs(theta_hat)
-                k2 = rhs(theta_hat + dt * k1)
-                theta_hat = theta_hat + 0.5 * dt * (k1 + k2)
+                k2 = rhs(theta_hat + self.dt * k1)
+                theta_hat = theta_hat + 0.5 * self.dt * (k1 + k2)
 
-            tnow = n * dt
-            if config.save_every is not None and (n % config.save_every == 0 or n == nsteps):
+            tnow = n * self.dt
+            if self.config.save_every is not None and (n % self.config.save_every == 0 or n == self.nsteps):
                 theta_snapshot = ifft2(theta_hat).real.astype(self.dtype)
-                if config.save_to_disk and snapshot_dir:
+                if self.config.save_to_disk and snapshot_dir:
                     filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{tnow:.4f}.npy")
                     np.save(filename, theta_snapshot)
                     if snapshot_count == 0:
                         metadata = {
                             "N": self.grid.N,
                             "L": self.grid.L,
-                            "dt": dt,
-                            "kappa": kappa,
-                            "peclet": config.peclet,
-                            "mean_grad": config.mean_grad,
-                            "t_end": config.t_end,
-                            "save_every": config.save_every,
+                            "dt": self.dt,
+                            "kappa": self.kappa,
+                            "peclet": self.config.peclet,
+                            "mean_grad": self.config.mean_grad,
+                            "t_end": self.config.t_end,
+                            "save_every": self.config.save_every,
                         }
                         np.save(os.path.join(snapshot_dir, "metadata.npy"), metadata)
                     snapshot_count += 1
                 else:
-                    diagnostics.snapshots.append(theta_snapshot)
-                diagnostics.times = np.append(diagnostics.times, tnow)
+                    self.diagnostics.snapshots.append(theta_snapshot)
+                self.diagnostics.times = np.append(self.diagnostics.times, tnow)
 
-            if frame_step is not None and (n % frame_step == 0 or n == nsteps):
-                diagnostics.frames.append(ifft2(theta_hat).real.astype(self.dtype))
+            if frame_step is not None and (n % frame_step == 0 or n == self.nsteps):
+                self.diagnostics.frames.append(ifft2(theta_hat).real.astype(self.dtype))
 
-            if verbose and n % max(1, nsteps // 10) == 0:
-                print(f"  Step {n}/{nsteps} (t={tnow:.3f}/{t_end:.3f})")
+            if self.verbose and n % max(1, self.nsteps // 10) == 0:
+                print(f"  Step {n}/{self.nsteps} (t={tnow:.3f}/{self.t_end:.3f})")
 
         theta_final = ifft2(theta_hat).real.astype(self.dtype)
 
-        if verbose:
-            print(f"Simulation complete. Final time: {t_end:.3f}")
+        if self.verbose:
+            print(f"Simulation complete. Final time: {self.t_end:.3f}")
             if snapshot_dir and snapshot_count > 0:
                 print(f"  Saved {snapshot_count} snapshots to: {snapshot_dir}/")
 
-        return theta_final, diagnostics
+        return theta_final, self.diagnostics
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -255,6 +273,7 @@ class ScalarAdvectionDiffusionSolver:
             kappa = urms * self.grid.L / config.peclet
         else:
             raise ValueError("Either kappa or peclet must be specified")
+        self.kappa = kappa
 
         if config.dt is not None:
             dt = config.dt
@@ -269,10 +288,9 @@ class ScalarAdvectionDiffusionSolver:
         else:
             t_end = config.t_advective_mult * self.grid.L / urms
 
-        nsteps = int(np.ceil(t_end / dt))
-        dt = t_end / nsteps  # adjust to land exactly on t_end
-
-        return dt, nsteps, float(kappa), float(t_end)
+        self.t_end = t_end
+        self.nsteps = int(np.ceil(t_end / dt))
+        self.dt = t_end / self.nsteps  # adjust to land exactly on t_end
 
     def _nonlinear_term(
         self,
