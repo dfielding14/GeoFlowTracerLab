@@ -42,6 +42,9 @@ class ScalarConfig:
     save_dir: Optional[str] = None
     method: str = "spectral"
     integrator: str = "etdrk4"
+    # if method == 'finite_volume' these are used
+    order: int = 2  # order of spatial reconstruction (1 or 2)
+    FOFC: bool = True  # use first-order flux correction (FOFC)
 
 
 @dataclass
@@ -146,8 +149,8 @@ class ScalarAdvectionDiffusionSolver:
         elif config.method.lower() == "finite_volume":
             self.vx_int = 0.5*(self.uy + np.roll(self.uy,1,axis=0))
             self.vy_int = 0.5*(self.ux + np.roll(self.ux,1,axis=1))
-            self.order = 1
-            self.FOFC = False
+            self.order = config.order
+            self.FOFC = config.FOFC
             return self.fv_solver(theta0)
         else:
             raise ValueError("Method must be 'spectral' or 'finite_volume'")
