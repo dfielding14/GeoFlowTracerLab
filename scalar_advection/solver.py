@@ -45,6 +45,7 @@ class ScalarConfig:
     # if method == 'finite_volume' these are used
     order: int = 2  # order of spatial reconstruction (1 or 2)
     FOFC: bool = True  # use first-order flux correction (FOFC)
+    solenoidal: bool = True  # whether velocity field is divergence-free
 
 
 @dataclass
@@ -151,6 +152,9 @@ class ScalarAdvectionDiffusionSolver:
             self.vy_int = 0.5*(self.ux + np.roll(self.ux,1,axis=1))
             self.order = config.order
             self.FOFC = config.FOFC
+            if self.FOFC:
+                self.min_FOFC = np.min(theta0)
+                self.max_FOFC = np.max(theta0)
             return self.fv_solver(theta0)
         else:
             raise ValueError("Method must be 'spectral' or 'finite_volume'")
@@ -281,25 +285,21 @@ class ScalarAdvectionDiffusionSolver:
             self.reconstruct(self.phi, 1, "y")
             # take half step forward
             (F1, G1) = self.calc_fluxes(dt/2)
-            sdt2 = self.phi + self.flux_div(F1, G1)
+            S1 = self.source_term(dt/2)
+            sdt2 = self.phi + self.flux_div(F1, G1) + S1
 
             # reconstruct again
             self.reconstruct(sdt2, self.order, "x")
             self.reconstruct(sdt2, self.order, "y")
+            S2 = self.source_term(dt)
             (F2, G2) = self.calc_fluxes(dt)
 
             if self.FOFC:
                 # if using FOFC take a trial full step
-                s_tmp = self.phi + self.flux_div(F2, G2)
+                s_tmp = self.phi + self.flux_div(F2, G2) + S2
                 # identify where fluxes lead to negative values
-                mask = (s_tmp < 0)
-                #if self.vel_opt == "sol":
-                #    # if velcoity field is incompressible
-                #    # also identify where scalar is too large
-                #    # TODO: this should be dependent on initial
-                #    # conditions and it isn't right now
-                #    mask = np.logical_or(mask, (s_tmp > 1))
-                if np.any(mask):
+                mask = (s_tmp < self.min_FOFC) & (s_tmp > self.max_FOFC)
+                if self.config.solenoidal and np.any(mask):
                     # construct mask for fluxes
                     maskF = np.logical_or(mask, np.roll(mask,1,axis=0))
                     maskG = np.logical_or(mask, np.roll(mask,1,axis=1))
@@ -307,13 +307,13 @@ class ScalarAdvectionDiffusionSolver:
                     # were constructed for the half time step
                     F2[maskF] = 2*F1[maskF]
                     G2[maskG] = 2*G1[maskG]
-                    self.phi += self.flux_div(F2, G2)
+                    self.phi += self.flux_div(F2, G2) + 2*S1
                 else:
                     # if no bad values, take full step
                     self.phi = s_tmp
             else:
                 # take full step forward
-                self.phi += self.flux_div(F2, G2)
+                self.phi += self.flux_div(F2, G2) + S2
         else:
             # perform reconstruction "donor cell" reconstruction
             self.reconstruct(self.phi, 1, "x")
@@ -321,7 +321,8 @@ class ScalarAdvectionDiffusionSolver:
 
             # take one forward euler/RK1 step
             (F,G) = self.calc_fluxes(dt)
-            self.phi += self.flux_div(F,G)
+            S = self.source_term(dt)
+            self.phi += self.flux_div(F,G) + S
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -435,16 +436,24 @@ class ScalarAdvectionDiffusionSolver:
         """
         Calculate the fluxes of the scalar field
         """
-        # construct fluxes
+        # advective fluxes
         F = -1*dt*self.s_intx*self.vx_int
         G = -1*dt*self.s_inty*self.vy_int
 
+        # diffusive fluxes
         if self.kappa > 0:
-            # add diffusion fluxes
             F += self.kappa*dt*(self.phi - np.roll(self.phi,1,axis=0))/self.grid.dx
             G += self.kappa*dt*(self.phi - np.roll(self.phi,1,axis=1))/self.grid.dx
 
         return F, G
+    
+    def source_term(self, dt):
+        """
+        Calculate the source term from the mean gradient
+        """
+        Gx, Gy = self.config.mean_grad
+        S = -dt*(Gx*self.ux + Gy*self.uy)
+        return S
 
     def flux_div(self, F, G):
         """
