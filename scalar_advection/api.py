@@ -12,6 +12,7 @@ from .grid import SpectralGrid
 from .velocity import VelocityConfig, VelocityFieldGenerator
 from .solver import ScalarAdvectionDiffusionSolver, ScalarConfig, SimulationDiagnostics
 from .spectra import (
+    Spectrum,
     kinetic_energy_spectrum,
     plot_energy_spectrum,
     scalar_power_spectrum,
@@ -101,7 +102,7 @@ class ScalarAdvectionAPI:
         )
 
     def velocity_spectrum(self, ux: np.ndarray, uy: np.ndarray, *, n_bins: int = 48) -> Dict[str, np.ndarray]:
-        return kinetic_energy_spectrum(ux, uy, n_bins=n_bins)
+        return kinetic_energy_spectrum(ux, uy, self.grid, n_bins=n_bins)
 
     def velocity_structure_functions(self, ux: np.ndarray, uy: np.ndarray, **kwargs) -> Dict[str, np.ndarray]:
         return structure_functions((ux, uy), **kwargs)
@@ -125,7 +126,7 @@ class ScalarAdvectionAPI:
         plot_structure_functions(result, **kwargs)
 
     @staticmethod
-    def plot_pair_increment_pdf(result: Dict[str, np.ndarray], **kwargs) -> None:
+    def plot_pair_increment_pdf(result: Spectrum, **kwargs) -> None:
         plot_pair_increment_pdf(result, **kwargs)
 
     @staticmethod
@@ -133,8 +134,8 @@ class ScalarAdvectionAPI:
         plot_energy_spectrum(spec, **kwargs)
 
     @staticmethod
-    def plot_scalar_spectrum(k: np.ndarray, E: np.ndarray, **kwargs) -> None:
-        plot_scalar_spectrum(k, E, **kwargs)
+    def plot_scalar_spectrum(result: Spectrum, **kwargs) -> None:
+        plot_scalar_spectrum(result, **kwargs)
 
     # ------------------------------------------------------------------
     # FFT utilities

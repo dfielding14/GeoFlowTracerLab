@@ -6,10 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-Array = np.ndarray
-
-
-def find_ell_bin_edges(r_min: float, r_max: float, n_ell_bins: int) -> Array:
+def find_ell_bin_edges(r_min: float, r_max: float, n_ell_bins: int) -> np.ndarray:
     """
     Compute integer-valued bin edges for isotropic shell averages.
     """

@@ -4,6 +4,7 @@ Power spectrum utilities for velocity and scalar fields.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, Tuple, Optional
 
 import numpy as np
@@ -14,6 +15,49 @@ from .fitting import best_powerlaw_fit
 from .fft import fft2
 from .grid import SpectralGrid
 
+
+@dataclass
+class Spectrum:
+    k: np.ndarray
+    Pk: np.ndarray
+    edges: np.ndarray
+    dk: np.ndarray
+    Etot: np.ndarray
+
+def _binning_helper(
+    ks: np.ndarray,
+    Es: np.ndarray,
+    kmin: float = 1,
+    kmax: Optional[float] = None,
+) -> Spectrum:
+    """
+    Take 2D arrays in k-space and bin according to the norm of k
+    args:
+        ks - wavenumbers to bin along
+        Es - amplitudes at each wave-number
+    returns:
+        Spectrum - The spectrum dataclass describing the resulting binned spectrum
+    """
+
+    if ks.ndim != 2 or Es.ndim != 2 or ks.shape != Es.shape:
+        raise ValueError("ks and Es must be 2D arrays")
+    N = ks.shape[0]
+
+    if kmax is None:
+        kmax = np.floor(np.max(ks))
+
+    kbins = find_ell_bin_edges(kmin, kmax, n_ell_bins=int(kmax - kmin))
+    kcs = 0.5 * (kbins[:-1] + kbins[1:])
+    dk = kbins[1:] - kbins[:-1]
+
+    #kbins = np.geomspace(kmin, kmax, num=N//2 + 1)
+    #kcs = 0.5 * (kbins[:-1] + kbins[1:])
+    #dk = np.diff(kbins)
+
+    (E1d,be) = np.histogram(ks.flatten(), bins=kbins, weights=Es.flatten())
+    E1d /= dk
+
+    return Spectrum(k=kcs, Pk=E1d, edges=be, dk=dk, Etot=E1d.sum())
 
 def _subtract_linear_trend(
     field: np.ndarray,
@@ -49,7 +93,7 @@ def scalar_power_spectrum(
     subtract_mean: bool = True,
     subtract_mean_gradient: bool = False,
     mean_grad: Optional[Tuple[float, float]] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Spectrum:
     """
     Shell-averaged power spectrum of a scalar field.
     """
@@ -59,22 +103,16 @@ def scalar_power_spectrum(
         data = _subtract_linear_trend(data, grid, gradient=mean_grad)
     elif subtract_mean:
         data = data - data.mean()
+    ny, nx = data.shape
 
-    field_hat = fft2(data)
+    field_hat = fft2(data) / (nx * ny) ** 2
     power = np.abs(field_hat) ** 2
 
-    k_shells = []
-    E_shells = []
-    for k_int in range(1, grid.N // 2 + 1):
-        mask = np.floor(grid.k_norm + 1e-12) == k_int
-        if np.any(mask):
-            k_shells.append(grid.k_norm[mask].mean())
-            E_shells.append(power[mask].sum())
-    return np.array(k_shells), np.array(E_shells)
+    return _binning_helper(grid.k_norm, power, kmin=1.0, kmax=grid.N // 2 + 1)
+
 
 def plot_scalar_spectrum(
-    k: np.ndarray,
-    E: np.ndarray,
+    spec: Spectrum,
     *,
     fname: str | None = None,
     title: str | None = None,
@@ -113,8 +151,8 @@ def plot_scalar_spectrum(
     matplotlib.axes.Axes
         Axes containing the plot.
     """
-    k = np.asarray(k)
-    E = np.asarray(E)
+    k = spec.k
+    E = spec.Pk
     if ax is None:
         fig, ax = plt.subplots(figsize=(7.0, 4.8), dpi=140)
     else:
@@ -178,9 +216,10 @@ def plot_scalar_spectrum(
 def kinetic_energy_spectrum(
     ux: np.ndarray,
     uy: np.ndarray,
+    grid: SpectralGrid,
     *,
     n_bins: int = 48,
-) -> Dict[str, np.ndarray]:
+) -> Spectrum:
     """
     Isotropized kinetic energy spectrum E(k) from a 2-D velocity field.
     """
@@ -188,43 +227,17 @@ def kinetic_energy_spectrum(
     uy = np.asarray(uy)
     ny, nx = ux.shape
 
-    kx_i = (np.fft.fftfreq(nx) * nx).astype(np.float64)
-    ky_i = (np.fft.fftfreq(ny) * ny).astype(np.float64)
-    KX, KY = np.meshgrid(kx_i, ky_i, indexing="xy")
-    Kidx = np.hypot(KX, KY)
-
     Ux = np.fft.fft2(ux)
     Uy = np.fft.fft2(uy)
     S = 0.5 * (np.abs(Ux) ** 2 + np.abs(Uy) ** 2) / (nx * ny) ** 2
     S = S.copy()
-    S[Kidx == 0.0] = 0.0
+    S[grid.k == 0.0] = 0.0
 
-    kmin_i = 1.0
-    kmax_i = float(np.floor(np.max(Kidx)))
-    edges_i = find_ell_bin_edges(kmin_i, kmax_i, n_bins)
-    edges_i = np.unique(edges_i)
-    if edges_i.size < 3:
-        edges_i = np.array([1, 2, 3], dtype=int)
-    dk = np.diff(edges_i).astype(float)
-    centers = 0.5 * (edges_i[:-1] + edges_i[1:])
-
-    shell = np.digitize(Kidx.ravel(), edges_i) - 1
-    valid = (shell >= 0) & (shell < dk.size)
-    shell_sum = np.bincount(shell[valid], weights=S.ravel()[valid], minlength=dk.size)
-
-    E1d = shell_sum / np.maximum(dk, 1e-300)
-
-    return {
-        "k": centers,
-        "E": E1d,
-        "edges": edges_i.astype(float),
-        "dk": dk,
-        "E_total": float(E1d @ dk),
-    }
+    return _binning_helper(grid.k_norm, S, kmin=1.0, kmax=grid.N // 2 + 1)
 
 
 def plot_energy_spectrum(
-    spec: Dict[str, np.ndarray],
+    spec: Spectrum,
     fname: str | None = None,
     title: str | None = None,
     *,
@@ -236,8 +249,8 @@ def plot_energy_spectrum(
     """
     Plot E(k) vs k and optionally overlay the best-fit power-law segment.
     """
-    k = spec["k"]
-    E = spec["E"]
+    k = spec.k
+    E = spec.Pk
 
     fig, ax = plt.subplots(figsize=(8.0, 5.2), dpi=140)
     (line,) = ax.loglog(k, E, lw=1.8, alpha=0.9, label=label)

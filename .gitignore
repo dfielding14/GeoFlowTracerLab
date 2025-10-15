@@ -1,4 +1,5 @@
 __pycache__/
+scalar_advection/__pycache__/
 *.py[cod]
 *.so
 

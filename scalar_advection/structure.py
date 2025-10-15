@@ -31,18 +31,13 @@ Field = Union[Array, Tuple[Array, Array]]
 
 def generate_displacements(ell_bin_edges: Array, n_per_bin: int, seed: int | None = None) -> Array:
     rng = np.random.default_rng(seed)
-    n_bins = len(ell_bin_edges) - 1
     starts = ell_bin_edges[:-1, None]
     stops = ell_bin_edges[1:, None]
-    r_vals = np.geomspace(starts, stops, n_per_bin, axis=1).reshape(-1)
-    ang = rng.uniform(0.0, np.pi, r_vals.size)
+    r_vals = np.geomspace(starts, stops, n_per_bin, axis=1).flatten()
+    ang = rng.uniform(0.0, 2*np.pi, r_vals.size)
     dx = np.rint(r_vals * np.cos(ang)).astype(np.int32)
     dy = np.rint(r_vals * np.sin(ang)).astype(np.int32)
     disp = np.stack([dx, dy], axis=1)
-    disp = np.unique(disp, axis=0)
-    mask = (disp[:, 0] < 0) | ((disp[:, 0] == 0) & (disp[:, 1] < 0))
-    disp = np.where(mask[:, None], -disp, disp)
-    disp = np.unique(disp, axis=0)
     r = np.hypot(disp[:, 0], disp[:, 1])
     return disp[np.argsort(r)]
 
