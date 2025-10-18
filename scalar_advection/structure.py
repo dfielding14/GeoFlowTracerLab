@@ -516,12 +516,13 @@ def pair_increment_pdf(
     """
     Build a 2D histogram of increment PDFs versus separation.
     """
-    if isinstance(field, (tuple, list)):
+    is_vector = isinstance(field, (tuple, list))
+    if is_vector:
         ux, uy = field
         ny, nx = ux.shape
-        is_vector = True
     else:
-        raise ValueError("pair_increment_pdf expects a vector field (ux, uy).")
+        theta = np.asarray(field)
+        ny, nx = theta.shape
 
     if r_max is None:
         r_max = min(ny, nx) // 2
@@ -539,12 +540,16 @@ def pair_increment_pdf(
     eys = (dys / r[valid]).astype(np.float64)
     n_ell = len(ell_edges) - 1
 
-    spd_max = 2.0 * float(np.max(np.hypot(ux, uy))) + 1e-12
+    if is_vector:
+        spd_max = 2.0 * float(np.max(np.hypot(ux, uy))) + 1e-12
+    else:
+        spd_max = 2.0 * float(np.max(np.abs(theta))) + 1e-12
+
     if du_edges is None:
         if du_max is None:
             du_max = spd_max
         du_min = max(du_max * 1e-3, 1e-6)
-        if kind == "long" and signed_longitudinal:
+        if is_vector and kind == "long" and signed_longitudinal:
             n_pos = n_du_bins // 2
             pos = np.geomspace(du_min, du_max, n_pos + 1)
             neg = -pos[::-1]
@@ -560,7 +565,7 @@ def pair_increment_pdf(
     pairs_per_bin = counts_disp * (nx * ny)
     counts2d = np.zeros((n_ell, n_du), dtype=np.int64)
 
-    if _HAVE_NUMBA and _uniform_edges(du_edges):
+    if is_vector and _HAVE_NUMBA and _uniform_edges(du_edges):
         kind_id = 0 if kind == "mag" else (1 if kind == "long" else 2)
         ddu = du_edges[1] - du_edges[0]
         inv_ddu = 1.0 / ddu
@@ -581,19 +586,26 @@ def pair_increment_pdf(
         )
     else:
         for dx, dy, b, ex, ey in zip(dxs, dys, bins, exs, eys):
-            dux = np.roll(ux, shift=(dy, dx), axis=(0, 1)) - ux
-            duy = np.roll(uy, shift=(dy, dx), axis=(0, 1)) - uy
-            if kind == "mag":
-                vals = np.hypot(dux, duy)
-            elif kind == "long":
-                vals = dux * ex + duy * ey
-                if not signed_longitudinal:
+            if is_vector:
+                dux = np.roll(ux, shift=(dy, dx), axis=(0, 1)) - ux
+                duy = np.roll(uy, shift=(dy, dx), axis=(0, 1)) - uy
+                if kind == "mag":
+                    vals = np.hypot(dux, duy)
+                elif kind == "long":
+                    vals = dux * ex + duy * ey
+                    if not signed_longitudinal:
+                        vals = np.abs(vals)
+                elif kind == "tran":
+                    vals = -dux * ey + duy * ex
                     vals = np.abs(vals)
-            elif kind == "tran":
-                vals = -dux * ey + duy * ex
-                vals = np.abs(vals)
+                else:
+                    raise ValueError("kind must be 'mag', 'long', or 'tran'")
             else:
-                raise ValueError("kind must be 'mag', 'long', or 'tran'")
+                if kind not in {"mag", "long"}:
+                    raise ValueError("kind must be 'mag' for scalar fields")
+                vals = np.roll(theta, shift=(dy, dx), axis=(0, 1)) - theta
+                if kind == "mag" or not signed_longitudinal:
+                    vals = np.abs(vals)
             h, _ = np.histogram(vals.ravel(), bins=du_edges)
             counts2d[b, :] += h.astype(np.int64)
 
@@ -611,7 +623,7 @@ def pair_increment_pdf(
         "counts_disp": counts_disp,
         "pairs_per_bin": pairs_per_bin,
         "kind": kind,
-        "signed_longitudinal": signed_longitudinal,
+        "signed_longitudinal": signed_longitudinal if is_vector else False,
     }
 
 

@@ -53,6 +53,7 @@ class SimulationDiagnostics:
     kappa: float = 0.0
     n_steps: int = 0
     frames: Optional[List[np.ndarray]] = None
+    grad_sq_integral: float = 0.0
 
 
 class ScalarAdvectionDiffusionSolver:
@@ -146,6 +147,8 @@ class ScalarAdvectionDiffusionSolver:
         else:
             F_hat = None
 
+        grad_sq_prev = self._mean_grad_sq(theta_hat)
+
         integrator = (config.integrator or "etdrk4").lower()
         if integrator not in {"etdrk4", "rk4", "heun"}:
             raise ValueError("integrator must be 'etdrk4', 'rk4', or 'heun'")
@@ -225,6 +228,10 @@ class ScalarAdvectionDiffusionSolver:
 
             if verbose and n % max(1, nsteps // 10) == 0:
                 print(f"  Step {n}/{nsteps} (t={tnow:.3f}/{t_end:.3f})")
+
+            grad_sq_curr = self._mean_grad_sq(theta_hat)
+            diagnostics.grad_sq_integral += 0.5 * (grad_sq_prev + grad_sq_curr) * dt
+            grad_sq_prev = grad_sq_curr
 
         theta_final = ifft2(theta_hat).real.astype(self.dtype)
 
@@ -310,6 +317,11 @@ class ScalarAdvectionDiffusionSolver:
     def _auto_snapshot_dir() -> str:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         return os.path.join("snapshots", f"run_{timestamp}_fft{FFT_BACKEND.lower()}")
+
+    def _mean_grad_sq(self, theta_hat: np.ndarray) -> float:
+        theta_x = ifft2(1j * self.grid.kx * theta_hat).real
+        theta_y = ifft2(1j * self.grid.ky * theta_hat).real
+        return float(np.mean(theta_x**2 + theta_y**2))
 
 
 __all__ = ["ScalarConfig", "SimulationDiagnostics", "ScalarAdvectionDiffusionSolver"]
