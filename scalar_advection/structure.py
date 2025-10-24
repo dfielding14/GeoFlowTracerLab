@@ -1,5 +1,5 @@
 """
-Structure function and increment statistics for 2-D fields.
+Structure function and increment statistics for 2‑D and 3‑D fields.
 """
 
 from __future__ import annotations
@@ -22,29 +22,69 @@ except Exception:  # pragma: no cover - optional dependency
     HAVE_NUMBA = False
 
 Array = np.ndarray
-Field = Union[Array, Tuple[Array, Array]]
+# Field can be a scalar array (2D or 3D) or a tuple of vector components.
+# For vectors, we support 2D (ux, uy) and 3D (ux, uy, uz) component tuples.
+Field = Union[Array, Tuple[Array, Array], Tuple[Array, Array, Array]]
 
 # -------------------------------------------------------------------------
 # Displacement sampling
 # -------------------------------------------------------------------------
 
 
-def generate_displacements(ell_bin_edges: Array, n_per_bin: int, seed: int | None = None) -> Array:
+def generate_displacements(
+    ell_bin_edges: Array,
+    n_per_bin: int,
+    seed: int | None = None,
+    ndim: int = 2,
+) -> Array:
+    """
+    Sample integer displacement vectors grouped by separation bins.
+
+    - ndim=2: sample angles uniformly in [0, π] and canonicalize Δ and −Δ.
+    - ndim=3: sample directions uniformly on S^2, then canonicalize to a
+      single half-space using lexicographic sign rules.
+    """
     rng = np.random.default_rng(seed)
-    n_bins = len(ell_bin_edges) - 1
     starts = ell_bin_edges[:-1, None]
     stops = ell_bin_edges[1:, None]
     r_vals = np.geomspace(starts, stops, n_per_bin, axis=1).reshape(-1)
-    ang = rng.uniform(0.0, np.pi, r_vals.size)
-    dx = np.rint(r_vals * np.cos(ang)).astype(np.int32)
-    dy = np.rint(r_vals * np.sin(ang)).astype(np.int32)
-    disp = np.stack([dx, dy], axis=1)
-    disp = np.unique(disp, axis=0)
-    mask = (disp[:, 0] < 0) | ((disp[:, 0] == 0) & (disp[:, 1] < 0))
-    disp = np.where(mask[:, None], -disp, disp)
-    disp = np.unique(disp, axis=0)
-    r = np.hypot(disp[:, 0], disp[:, 1])
-    return disp[np.argsort(r)]
+
+    if ndim == 2:
+        ang = rng.uniform(0.0, np.pi, r_vals.size)
+        dx = np.rint(r_vals * np.cos(ang)).astype(np.int32)
+        dy = np.rint(r_vals * np.sin(ang)).astype(np.int32)
+        disp = np.stack([dx, dy], axis=1)
+        disp = np.unique(disp, axis=0)
+        # Canonicalize to avoid double counting opposite directions.
+        mask = (disp[:, 0] < 0) | ((disp[:, 0] == 0) & (disp[:, 1] < 0))
+        disp = np.where(mask[:, None], -disp, disp)
+        disp = np.unique(disp, axis=0)
+        r = np.hypot(disp[:, 0], disp[:, 1])
+        return disp[np.argsort(r)]
+    elif ndim == 3:
+        # Sample directions uniformly on the sphere via normal deviates.
+        vec = rng.normal(size=(r_vals.size, 3))
+        norms = np.linalg.norm(vec, axis=1)
+        # Avoid divide by zero if any degenerate vector appears (unlikely).
+        norms = np.where(norms > 0, norms, 1.0)
+        unit = vec / norms[:, None]
+        dx = np.rint(r_vals * unit[:, 0]).astype(np.int32)
+        dy = np.rint(r_vals * unit[:, 1]).astype(np.int32)
+        dz = np.rint(r_vals * unit[:, 2]).astype(np.int32)
+        disp = np.stack([dx, dy, dz], axis=1)
+        # Deduplicate after rounding
+        disp = np.unique(disp, axis=0)
+        # Canonicalize: enforce a half-space by lexicographic positivity
+        # (dx > 0) or (dx==0 and dy > 0) or (dx==0 and dy==0 and dz >= 0).
+        mask = (disp[:, 0] < 0) | (
+            (disp[:, 0] == 0) & ((disp[:, 1] < 0) | ((disp[:, 1] == 0) & (disp[:, 2] < 0)))
+        )
+        disp = np.where(mask[:, None], -disp, disp)
+        disp = np.unique(disp, axis=0)
+        r = np.sqrt((disp[:, 0] ** 2 + disp[:, 1] ** 2 + disp[:, 2] ** 2).astype(np.float64))
+        return disp[np.argsort(r)]
+    else:
+        raise ValueError("generate_displacements only supports ndim=2 or 3")
 
 
 # -------------------------------------------------------------------------
@@ -160,6 +200,123 @@ def _sf_vector_via_rolls(
     }
 
 
+def _sf_scalar_via_rolls_nd(
+    field: Array, orders: Array, ell_edges: Array, displacements: Array
+) -> Dict[str, Array]:
+    """Generic nD (2D/3D) scalar fallback using np.roll on all axes."""
+    n_bins = len(ell_edges) - 1
+    n_orders = len(orders)
+    sums = np.zeros((n_orders, n_bins), dtype=np.float64)
+    counts = np.zeros(n_bins, dtype=np.int64)
+    axes = tuple(range(field.ndim))
+    for disp in displacements:
+        # Build full shift tuple in (z, y, x) or (y, x) order matching axes
+        if field.ndim == 2:
+            dy, dx = int(disp[1]), int(disp[0])
+            shift = (dy, dx)
+            r = float(np.hypot(dx, dy))
+        elif field.ndim == 3:
+            dx, dy, dz = int(disp[0]), int(disp[1]), int(disp[2])
+            shift = (dz, dy, dx)
+            r = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+        else:
+            raise ValueError("Only 2D or 3D scalar fields are supported")
+        b = _bin_index_for_radius(r, ell_edges)
+        if b < 0 or b >= n_bins or r == 0.0:
+            continue
+        diff = np.roll(field, shift=shift, axis=axes) - field
+        adiff = np.abs(diff)
+        for j, p in enumerate(orders):
+            sums[j, b] += float(np.mean(adiff**p))
+        counts[b] += 1
+    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
+    return {"r": centers, "S": sums / np.maximum(1, counts), "counts": counts}
+
+
+def _sf_vector_via_rolls_nd(
+    comps: Tuple[Array, ...],
+    orders: Array,
+    ell_edges: Array,
+    displacements: Array,
+    signed_longitudinal: bool,
+) -> Dict[str, Array]:
+    """Generic nD (2D/3D) vector fallback using np.roll on all axes.
+
+    - For 2D, equivalent to `_sf_vector_via_rolls` but uses generic machinery.
+    - For 3D, computes longitudinal δu·ê, transverse magnitude |δu⊥|, and |δu|.
+    """
+    n_bins = len(ell_edges) - 1
+    n_orders = len(orders)
+    ndim = comps[0].ndim
+    axes = tuple(range(ndim))
+
+    sums_mag = np.zeros((n_orders, n_bins), dtype=np.float64)
+    sums_long = np.zeros((n_orders, n_bins), dtype=np.float64)
+    sums_tran = np.zeros((n_orders, n_bins), dtype=np.float64)
+    counts = np.zeros(n_bins, dtype=np.int64)
+
+    for disp in displacements:
+        if ndim == 2:
+            dy, dx = int(disp[1]), int(disp[0])
+            shift = (dy, dx)
+            r = float(np.hypot(dx, dy))
+            ex, ey = (dx / r if r > 0 else 0.0), (dy / r if r > 0 else 0.0)
+        elif ndim == 3:
+            dx, dy, dz = int(disp[0]), int(disp[1]), int(disp[2])
+            shift = (dz, dy, dx)
+            r = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+            ex, ey, ez = (
+                (dx / r if r > 0 else 0.0),
+                (dy / r if r > 0 else 0.0),
+                (dz / r if r > 0 else 0.0),
+            )
+        else:
+            raise ValueError("Only 2D or 3D vector fields are supported")
+        b = _bin_index_for_radius(r, ell_edges)
+        if b < 0 or b >= n_bins or r == 0.0:
+            continue
+
+        # Periodic differences by rolling each component
+        du = [np.roll(c, shift=shift, axis=axes) - c for c in comps]
+
+        if ndim == 2:
+            dux, duy = du
+            long_ = dux * ex + duy * ey
+            tran_ = -dux * ey + duy * ex  # scalar transverse component in 2D
+            mag2 = dux * dux + duy * duy
+            tran_mag = np.abs(tran_)
+        else:  # 3D
+            dux, duy, duz = du
+            long_ = dux * ex + duy * ey + duz * ez
+            mag2 = dux * dux + duy * duy + duz * duz
+            # magnitude of component perpendicular to ê
+            tran_mag = np.sqrt(np.maximum(mag2 - long_ * long_, 0.0))
+
+        mag_ = np.sqrt(mag2)
+
+        for j, p in enumerate(orders):
+            if p < 0:
+                raise ValueError("Orders must be non-negative")
+            sums_mag[j, b] += float(np.mean(np.abs(mag_) ** p))
+            if signed_longitudinal:
+                if abs(p - int(round(p))) > 1e-12:
+                    raise ValueError("signed_longitudinal=True requires integer orders.")
+                sums_long[j, b] += float(np.mean(long_**p))
+            else:
+                sums_long[j, b] += float(np.mean(np.abs(long_) ** p))
+            sums_tran[j, b] += float(np.mean(np.abs(tran_mag) ** p))
+        counts[b] += 1
+
+    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
+    return {
+        "r": centers,
+        "mag": sums_mag / np.maximum(1, counts),
+        "long": sums_long / np.maximum(1, counts),
+        "tran": sums_tran / np.maximum(1, counts),
+        "counts": counts,
+    }
+
+
 # -------------------------------------------------------------------------
 # Numba kernels
 # -------------------------------------------------------------------------
@@ -249,37 +406,79 @@ def structure_functions(
     seed: int | None = None,
 ) -> Dict[str, Array]:
     """
-    Compute isotropic structure functions for scalar or vector fields.
+    Compute isotropic structure functions for scalar or vector fields (2D/3D).
+
+    - Scalar input: 2D (ny, nx) or 3D (nz, ny, nx) arrays.
+    - Vector input: tuple of 2 components (2D) or 3 components (3D), each with
+      identical shape.
+    - For p = 2 in 2D, an FFT-based estimator is used for S2 when
+      ``use_fft_for_p2=True``; in 3D the displacement-based estimator is used.
     """
+    # Detect dimensionality and shapes
     if isinstance(field, (tuple, list)):
-        ux, uy = field
-        ny, nx = ux.shape
+        ncomp = len(field)
+        if ncomp == 2:
+            ux, uy = field  # type: ignore[misc]
+            shape = ux.shape
+            ndim = 2
+        elif ncomp == 3:
+            ux, uy, uz = field  # type: ignore[misc]
+            shape = ux.shape
+            ndim = 3
+        else:
+            raise ValueError("Vector field must have 2 or 3 components")
+        if any(c.shape != shape for c in field):  # type: ignore[arg-type]
+            raise ValueError("All vector components must have identical shapes")
+        grid_shape = shape
     else:
-        ny, nx = field.shape
+        grid_shape = field.shape
+        if field.ndim not in (2, 3):
+            raise ValueError("Scalar field must be 2D or 3D")
+        ndim = field.ndim
+    if ndim == 2:
+        ny, nx = grid_shape[-2], grid_shape[-1]
+    else:
+        nz, ny, nx = grid_shape[-3], grid_shape[-2], grid_shape[-1]
 
     if r_max is None:
         r_max = min(ny, nx) // 2
 
     ell_edges = find_ell_bin_edges(r_min, r_max, n_ell_bins)
     n_per_bin = max(1, n_disp_total // n_ell_bins)
-    disps = generate_displacements(ell_edges, n_per_bin, seed=seed)
+    disps = generate_displacements(ell_edges, n_per_bin, seed=seed, ndim=ndim)
     orders_arr = np.asarray(orders, dtype=np.float64)
 
-    r = np.hypot(disps[:, 0], disps[:, 1]).astype(np.float64)
+    if ndim == 2:
+        r = np.hypot(disps[:, 0], disps[:, 1]).astype(np.float64)
+    else:
+        r = np.sqrt((disps[:, 0] ** 2 + disps[:, 1] ** 2 + disps[:, 2] ** 2).astype(np.float64))
     b = np.searchsorted(ell_edges, r, side="right") - 1
     valid = (b >= 0) & (b < (len(ell_edges) - 1)) & (r > 0.0)
-    dxs = disps[valid, 0].astype(np.int32)
-    dys = disps[valid, 1].astype(np.int32)
-    bins = b[valid].astype(np.int32)
-    exs = (dxs / r[valid]).astype(np.float64) if isinstance(field, (tuple, list)) else None
-    eys = (dys / r[valid]).astype(np.float64) if isinstance(field, (tuple, list)) else None
+    if ndim == 2:
+        dxs = disps[valid, 0].astype(np.int32)
+        dys = disps[valid, 1].astype(np.int32)
+        bins = b[valid].astype(np.int32)
+        exs = (dxs / r[valid]).astype(np.float64) if isinstance(field, (tuple, list)) else None
+        eys = (dys / r[valid]).astype(np.float64) if isinstance(field, (tuple, list)) else None
+    else:
+        dxs = disps[valid, 0].astype(np.int32)
+        dys = disps[valid, 1].astype(np.int32)
+        dzs = disps[valid, 2].astype(np.int32)
+        bins = b[valid].astype(np.int32)
+        if isinstance(field, (tuple, list)):
+            exs = (dxs / r[valid]).astype(np.float64)
+            eys = (dys / r[valid]).astype(np.float64)
+            ezs = (dzs / r[valid]).astype(np.float64)
+        else:
+            exs = eys = ezs = None  # type: ignore[assignment]
 
     n_bins = len(ell_edges) - 1
     n_orders = len(orders_arr)
 
     if isinstance(field, (tuple, list)):
-        ux, uy = field
-        if HAVE_NUMBA:
+        # Vector field
+        if ndim == 2 and HAVE_NUMBA:
+            ux, uy = field  # type: ignore[misc]
             out_mag_d, out_long_d, out_tran_d = _vector_means_per_disp(
                 ux, uy, dxs, dys, exs, eys, orders_arr, signed_longitudinal
             )
@@ -296,14 +495,21 @@ def structure_functions(
             centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
             out = {"r": centers, "mag": mag, "long": long, "tran": tran, "counts": counts}
         else:
-            out = _sf_vector_via_rolls(ux, uy, orders_arr, ell_edges, disps, signed_longitudinal)
-        if use_fft_for_p2 and np.any(np.isclose(orders_arr, 2.0)):
+            if ndim == 2:
+                ux, uy = field  # type: ignore[misc]
+                out = _sf_vector_via_rolls(ux, uy, orders_arr, ell_edges, disps, signed_longitudinal)
+            else:
+                comps = tuple(field)  # type: ignore[misc]
+                out = _sf_vector_via_rolls_nd(comps, orders_arr, ell_edges, disps, signed_longitudinal)
+        if use_fft_for_p2 and np.any(np.isclose(orders_arr, 2.0)) and ndim == 2:
+            ux, uy = field  # type: ignore[misc]
             r_fft, s2_fft = s2_fft_vector(ux, uy, ell_edges)
             j2 = np.where(np.isclose(orders_arr, 2.0))[0]
             out["mag"][j2, :] = s2_fft
     else:
+        # Scalar field
         field = np.asarray(field)
-        if HAVE_NUMBA:
+        if HAVE_NUMBA and ndim == 2:
             out_d = _scalar_means_per_disp(field, dxs, dys, orders_arr)
             counts = np.bincount(bins, minlength=n_bins)
             S = np.vstack(
@@ -312,8 +518,11 @@ def structure_functions(
             centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
             out = {"r": centers, "S": S, "counts": counts}
         else:
-            out = _sf_scalar_via_rolls(field, orders_arr, ell_edges, disps)
-        if use_fft_for_p2 and np.any(np.isclose(orders_arr, 2.0)):
+            if ndim == 2:
+                out = _sf_scalar_via_rolls(field, orders_arr, ell_edges, disps)
+            else:
+                out = _sf_scalar_via_rolls_nd(field, orders_arr, ell_edges, disps)
+        if use_fft_for_p2 and np.any(np.isclose(orders_arr, 2.0)) and ndim == 2:
             j2 = np.where(np.isclose(orders_arr, 2.0))[0]
             r_fft, s2_fft = s2_fft_scalar(field, ell_edges)
             out["S"][j2, :] = s2_fft
@@ -514,34 +723,73 @@ def pair_increment_pdf(
     seed: int | None = None,
 ) -> Dict[str, np.ndarray]:
     """
-    Build a 2D histogram of increment PDFs versus separation.
+    Build a 2D histogram of increment PDFs versus separation (2D/3D fields).
+
+    - For vectors in 3D, ``kind='tran'`` returns the magnitude of the
+      component perpendicular to the displacement direction.
+    - The fast Numba histogrammer is used only for 2D vectors with uniform
+      du bin widths; 3D falls back to a NumPy implementation.
     """
     is_vector = isinstance(field, (tuple, list))
     if is_vector:
-        ux, uy = field
-        ny, nx = ux.shape
+        ncomp = len(field)
+        if ncomp == 2:
+            ux, uy = field  # type: ignore[misc]
+            shape = ux.shape
+            ndim = 2
+        elif ncomp == 3:
+            ux, uy, uz = field  # type: ignore[misc]
+            shape = ux.shape
+            ndim = 3
+        else:
+            raise ValueError("Vector field must have 2 or 3 components")
+        if any(c.shape != shape for c in field):  # type: ignore[arg-type]
+            raise ValueError("All vector components must have identical shapes")
     else:
         theta = np.asarray(field)
-        ny, nx = theta.shape
+        shape = theta.shape
+        if theta.ndim not in (2, 3):
+            raise ValueError("Scalar field must be 2D or 3D")
+        ndim = theta.ndim
+
+    if ndim == 2:
+        ny, nx = shape
+    else:
+        nz, ny, nx = shape
 
     if r_max is None:
         r_max = min(ny, nx) // 2
     ell_edges = find_ell_bin_edges(r_min, r_max, n_ell_bins)
     n_per_bin = max(1, n_disp_total // n_ell_bins)
-    disps = generate_displacements(ell_edges, n_per_bin, seed=seed)
+    disps = generate_displacements(ell_edges, n_per_bin, seed=seed, ndim=ndim)
 
-    r = np.hypot(disps[:, 0], disps[:, 1]).astype(np.float64)
+    if ndim == 2:
+        r = np.hypot(disps[:, 0], disps[:, 1]).astype(np.float64)
+    else:
+        r = np.sqrt((disps[:, 0] ** 2 + disps[:, 1] ** 2 + disps[:, 2] ** 2).astype(np.float64))
     bins = np.searchsorted(ell_edges, r, side="right") - 1
     valid = (bins >= 0) & (bins < (len(ell_edges) - 1)) & (r > 0.0)
-    dxs = disps[valid, 0].astype(np.int32)
-    dys = disps[valid, 1].astype(np.int32)
-    bins = bins[valid].astype(np.int32)
-    exs = (dxs / r[valid]).astype(np.float64)
-    eys = (dys / r[valid]).astype(np.float64)
+    if ndim == 2:
+        dxs = disps[valid, 0].astype(np.int32)
+        dys = disps[valid, 1].astype(np.int32)
+        bins = bins[valid].astype(np.int32)
+        exs = (dxs / r[valid]).astype(np.float64)
+        eys = (dys / r[valid]).astype(np.float64)
+    else:
+        dxs = disps[valid, 0].astype(np.int32)
+        dys = disps[valid, 1].astype(np.int32)
+        dzs = disps[valid, 2].astype(np.int32)
+        bins = bins[valid].astype(np.int32)
+        exs = (dxs / r[valid]).astype(np.float64)
+        eys = (dys / r[valid]).astype(np.float64)
+        ezs = (dzs / r[valid]).astype(np.float64)
     n_ell = len(ell_edges) - 1
 
     if is_vector:
-        spd_max = 2.0 * float(np.max(np.hypot(ux, uy))) + 1e-12
+        if ndim == 2:
+            spd_max = 2.0 * float(np.max(np.hypot(ux, uy))) + 1e-12
+        else:
+            spd_max = 2.0 * float(np.max(np.sqrt(ux * ux + uy * uy + uz * uz))) + 1e-12
     else:
         spd_max = 2.0 * float(np.max(np.abs(theta))) + 1e-12
 
@@ -562,10 +810,11 @@ def pair_increment_pdf(
     n_du = len(du_centers)
 
     counts_disp = np.bincount(bins, minlength=n_ell)
-    pairs_per_bin = counts_disp * (nx * ny)
+    total_pairs_per_disp = (nx * ny) if ndim == 2 else (nx * ny * nz)
+    pairs_per_bin = counts_disp * total_pairs_per_disp
     counts2d = np.zeros((n_ell, n_du), dtype=np.int64)
 
-    if is_vector and _HAVE_NUMBA and _uniform_edges(du_edges):
+    if is_vector and _HAVE_NUMBA and _uniform_edges(du_edges) and ndim == 2:
         kind_id = 0 if kind == "mag" else (1 if kind == "long" else 2)
         ddu = du_edges[1] - du_edges[0]
         inv_ddu = 1.0 / ddu
@@ -585,29 +834,57 @@ def pair_increment_pdf(
             n_ell,
         )
     else:
-        for dx, dy, b, ex, ey in zip(dxs, dys, bins, exs, eys):
-            if is_vector:
-                dux = np.roll(ux, shift=(dy, dx), axis=(0, 1)) - ux
-                duy = np.roll(uy, shift=(dy, dx), axis=(0, 1)) - uy
-                if kind == "mag":
-                    vals = np.hypot(dux, duy)
-                elif kind == "long":
-                    vals = dux * ex + duy * ey
-                    if not signed_longitudinal:
+        if ndim == 2:
+            for dx, dy, b, ex, ey in zip(dxs, dys, bins, exs, eys):
+                if is_vector:
+                    dux = np.roll(ux, shift=(dy, dx), axis=(0, 1)) - ux
+                    duy = np.roll(uy, shift=(dy, dx), axis=(0, 1)) - uy
+                    if kind == "mag":
+                        vals = np.hypot(dux, duy)
+                    elif kind == "long":
+                        vals = dux * ex + duy * ey
+                        if not signed_longitudinal:
+                            vals = np.abs(vals)
+                    elif kind == "tran":
+                        vals = -dux * ey + duy * ex
                         vals = np.abs(vals)
-                elif kind == "tran":
-                    vals = -dux * ey + duy * ex
-                    vals = np.abs(vals)
+                    else:
+                        raise ValueError("kind must be 'mag', 'long', or 'tran'")
                 else:
-                    raise ValueError("kind must be 'mag', 'long', or 'tran'")
-            else:
-                if kind not in {"mag", "long"}:
-                    raise ValueError("kind must be 'mag' for scalar fields")
-                vals = np.roll(theta, shift=(dy, dx), axis=(0, 1)) - theta
-                if kind == "mag" or not signed_longitudinal:
-                    vals = np.abs(vals)
-            h, _ = np.histogram(vals.ravel(), bins=du_edges)
-            counts2d[b, :] += h.astype(np.int64)
+                    if kind not in {"mag", "long"}:
+                        raise ValueError("kind must be 'mag' for scalar fields")
+                    vals = np.roll(theta, shift=(dy, dx), axis=(0, 1)) - theta
+                    if kind == "mag" or not signed_longitudinal:
+                        vals = np.abs(vals)
+                h, _ = np.histogram(vals.ravel(), bins=du_edges)
+                counts2d[b, :] += h.astype(np.int64)
+        else:
+            axes = (0, 1, 2)
+            for dx, dy, dz, b, ex, ey, ez in zip(dxs, dys, dzs, bins, exs, eys, ezs):
+                if is_vector:
+                    dux = np.roll(ux, shift=(dz, dy, dx), axis=axes) - ux
+                    duy = np.roll(uy, shift=(dz, dy, dx), axis=axes) - uy
+                    duz = np.roll(uz, shift=(dz, dy, dx), axis=axes) - uz
+                    if kind == "mag":
+                        vals = np.sqrt(dux * dux + duy * duy + duz * duz)
+                    elif kind == "long":
+                        vals = dux * ex + duy * ey + duz * ez
+                        if not signed_longitudinal:
+                            vals = np.abs(vals)
+                    elif kind == "tran":
+                        longv = dux * ex + duy * ey + duz * ez
+                        mag2 = dux * dux + duy * duy + duz * duz
+                        vals = np.sqrt(np.maximum(mag2 - longv * longv, 0.0))
+                    else:
+                        raise ValueError("kind must be 'mag', 'long', or 'tran'")
+                else:
+                    if kind not in {"mag", "long"}:
+                        raise ValueError("kind must be 'mag' for scalar fields")
+                    vals = np.roll(theta, shift=(dz, dy, dx), axis=axes) - theta
+                    if kind == "mag" or not signed_longitudinal:
+                        vals = np.abs(vals)
+                h, _ = np.histogram(vals.ravel(), bins=du_edges)
+                counts2d[b, :] += h.astype(np.int64)
 
     with np.errstate(invalid="ignore", divide="ignore"):
         pdf = counts2d / np.maximum(pairs_per_bin[:, None], 1)
