@@ -118,6 +118,30 @@ def save_theta_frames(frames_dir: Path, times: np.ndarray, snapshots: List[np.nd
         plt.close(fig)
 
 
+def save_theta_velocity_frames(frames_dir: Path, times: np.ndarray, snapshots: List[np.ndarray], bg: np.ndarray, ux: np.ndarray, uy: np.ndarray) -> None:
+    """Overlay theta contours on top of velocity magnitude background.
+
+    Background: |u| via imshow, cmap=cmr.neutral. Contours: theta levels with
+    cmap=cmr.tropical.
+    """
+    ensure_dir(frames_dir)
+    levels = [-0.3, -0.15, 0.0, 0.15, 0.3]
+    spd = np.hypot(ux, uy)
+    vmax = float(np.percentile(spd, 99.0)) if np.isfinite(spd).any() else float(np.max(spd))
+    for idx, tnow in enumerate(times):
+        if idx >= len(snapshots):
+            break
+        arr = np.nan_to_num(snapshots[idx] + bg, copy=False)
+        fig, ax = plt.subplots(figsize=(5.6,5.6), dpi=140, constrained_layout=True)
+        im = ax.imshow(spd, origin="lower", cmap=cmr.neutral, vmin=0.0, vmax=vmax)
+        cs = ax.contour(arr, levels=levels, colors=None, cmap=cmr.tropical, linewidths=1.2)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f"t = {tnow:.3f}")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=r"$|\mathbf{u}|$")
+        fig.savefig(frames_dir / f"theta_u_t{tnow:.4f}.png", bbox_inches="tight")
+        plt.close(fig)
+
+
 def sliding_log_slope_series(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     if x.size < 2:
         return np.array([]), np.array([])
@@ -189,7 +213,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             y = np.linspace(-cfg.L/2, cfg.L/2, cfg.N, endpoint=False)
             X, Y = np.meshgrid(x, y, indexing="xy")
             bg = cfg.mean_grad[0]*X + cfg.mean_grad[1]*Y
-            save_theta_frames(pe_dir / "theta_frames", np.array(diag.times), diag.snapshots, bg)
+            times_arr = np.array(diag.times)
+            save_theta_frames(pe_dir / "theta_frames", times_arr, diag.snapshots, bg)
+            save_theta_velocity_frames(pe_dir / "theta_velocity_frames", times_arr, diag.snapshots, bg, ux, uy)
 
             times = np.array(diag.times, dtype=float)
             edots = []
@@ -202,12 +228,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             ratio = np.divide(edots, etas, out=np.zeros_like(edots), where=etas>0)
             np.savez_compressed(pe_dir / "edot_timeseries.npz", t=times, edot=edots, Etheta=etas, ratio=ratio)
             # Plot Edot and ratio time series
-            fig_ts, (ax_e, ax_r) = plt.subplots(2, 1, figsize=(6.0, 5.0), dpi=150, sharex=True, gridspec_kw={"height_ratios":[2.0,1.0], "hspace":0.05})
+            fig_ts, (ax_e, ax_r) = plt.subplots(
+                2,
+                1,
+                figsize=(6.0, 5.0),
+                dpi=150,
+                sharex=True,
+                constrained_layout=True,
+                gridspec_kw={"height_ratios": [2.0, 1.0], "hspace": 0.05},
+            )
             ax_e.plot(times, edots, '-o', ms=3)
             ax_e.set_ylabel(r"$\dot{E}_\theta$"); ax_e.grid(True, ls=':', lw=0.6)
             ax_r.plot(times, ratio, '-o', ms=3)
             ax_r.set_xlabel("time"); ax_r.set_ylabel(r"$\dot{E}_\theta / E_\theta$"); ax_r.grid(True, ls=':', lw=0.6)
-            fig_ts.tight_layout(); fig_ts.savefig(pe_dir / "edot_timeseries.png", bbox_inches='tight'); plt.close(fig_ts)
+            fig_ts.savefig(pe_dir / "edot_timeseries.png", bbox_inches='tight'); plt.close(fig_ts)
 
             late = times > 4.0
             if np.any(late):

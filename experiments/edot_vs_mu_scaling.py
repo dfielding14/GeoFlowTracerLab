@@ -29,6 +29,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import cmasher as cmr
 import numpy as np
 
 import sys
@@ -109,13 +110,13 @@ def build_velocity(N: int, alpha: float, lam_min: float, lam_max: float, wavelet
 
 def save_theta_frames_and_movie(frames_dir: Path, times: np.ndarray, snapshots: List[np.ndarray], bg: np.ndarray, peclet: float) -> str | None:
     ensure_dir(frames_dir)
-    levels = [-0.4, -0.2, 0.0, 0.2, 0.4]
+    levels = [-0.3, -0.15, 0.0, 0.15, 0.3]
     for idx, tnow in enumerate(times):
         if idx >= len(snapshots):
             break
         arr = np.nan_to_num(snapshots[idx] + bg, copy=False)
         fig, ax = plt.subplots(figsize=(6.0,6.0), dpi=160, constrained_layout=True)
-        cs = ax.contour(arr, levels=levels, cmap="RdBu_r")
+        cs = ax.contour(arr, levels=levels, cmap=cmr.iceburn)
         ax.clabel(cs, fmt="%0.1f", fontsize=8)
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_title(f"t = {tnow:.3f}")
@@ -131,6 +132,25 @@ def save_theta_frames_and_movie(frames_dir: Path, times: np.ndarray, snapshots: 
         return str(movie)
     except Exception:
         return None
+
+
+def save_theta_velocity_frames(frames_dir: Path, times: np.ndarray, snapshots: List[np.ndarray], bg: np.ndarray, ux: np.ndarray, uy: np.ndarray) -> None:
+    ensure_dir(frames_dir)
+    levels = [-0.3, -0.15, 0.0, 0.15, 0.3]
+    spd = np.hypot(ux, uy)
+    vmax = float(np.percentile(spd, 99.0)) if np.isfinite(spd).any() else float(np.max(spd))
+    for idx, tnow in enumerate(times):
+        if idx >= len(snapshots):
+            break
+        arr = np.nan_to_num(snapshots[idx] + bg, copy=False)
+        fig, ax = plt.subplots(figsize=(6.0,6.0), dpi=160, constrained_layout=True)
+        im = ax.imshow(spd, origin='lower', cmap=cmr.neutral, vmin=0.0, vmax=vmax)
+        cs = ax.contour(arr, levels=levels, cmap=cmr.tropical, linewidths=1.2)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f"t = {tnow:.3f}")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=r"$|\mathbf{u}|$")
+        fig.savefig(frames_dir / f"theta_u_t{tnow:.4f}.png", bbox_inches='tight')
+        plt.close(fig)
 
 
 def sliding_log_slope_series(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -209,6 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             X, Y = np.meshgrid(x, y, indexing="xy")
             bg = cfg.mean_grad[0]*X + cfg.mean_grad[1]*Y
             movie = save_theta_frames_and_movie(pe_dir / "theta_frames", diag.times, diag.snapshots, bg, pe)
+            save_theta_velocity_frames(pe_dir / "theta_velocity_frames", diag.times, diag.snapshots, bg, ux, uy)
 
             # Time series of Edot_theta and E_theta at snapshot times
             times = np.array(diag.times, dtype=float)
