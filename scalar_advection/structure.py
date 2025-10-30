@@ -147,8 +147,12 @@ def _sf_scalar_via_rolls(field: Array, orders: Array, ell_edges: Array, displace
             continue
         diff = np.roll(field, shift=(dy, dx), axis=(0, 1)) - field
         adiff = np.abs(diff)
+        # Reuse a power buffer to avoid repeated allocations
+        pow_buf = np.empty_like(adiff)
         for j, p in enumerate(orders):
-            sums[j, b] += np.mean(adiff**p)
+            # Compute adiff**p into pow_buf
+            np.power(adiff, p, out=pow_buf)
+            sums[j, b] += float(np.mean(pow_buf))
         counts[b] += 1
     S = sums / np.maximum(1, counts)
     centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
@@ -179,16 +183,25 @@ def _sf_vector_via_rolls(
         ex, ey = dx / r, dy / r
         long_ = dux * ex + duy * ey
         tran_ = -dux * ey + duy * ex
-        mag_ = np.hypot(dux, duy)
+        mag2 = dux * dux + duy * duy
+        mag_ = np.sqrt(mag2)
+        # Allocate reusable buffers for powers
+        pow_buf_mag = np.empty_like(mag_)
+        pow_buf_long = np.empty_like(long_)
+        pow_buf_tran = np.empty_like(tran_)
         for j, p in enumerate(orders):
-            sums_mag[j, b] += np.mean(np.abs(mag_) ** p)
+            np.power(np.abs(mag_), p, out=pow_buf_mag)
+            sums_mag[j, b] += float(np.mean(pow_buf_mag))
             if signed_longitudinal:
                 if abs(p - int(round(p))) > 1e-12:
                     raise ValueError("signed_longitudinal=True requires integer orders.")
-                sums_long[j, b] += np.mean(long_**p)
+                np.power(long_, p, out=pow_buf_long)
+                sums_long[j, b] += float(np.mean(pow_buf_long))
             else:
-                sums_long[j, b] += np.mean(np.abs(long_) ** p)
-            sums_tran[j, b] += np.mean(np.abs(tran_) ** p)
+                np.power(np.abs(long_), p, out=pow_buf_long)
+                sums_long[j, b] += float(np.mean(pow_buf_long))
+            np.power(np.abs(tran_), p, out=pow_buf_tran)
+            sums_tran[j, b] += float(np.mean(pow_buf_tran))
         counts[b] += 1
     centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
     return {

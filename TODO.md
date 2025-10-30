@@ -7,10 +7,11 @@ This checklist organizes the upcoming work around performance, diagnostics, and 
 - [x] Profiling: add lightweight timers around FFTs and nonlinear term to identify hotspots (small helper in `solver.py`).
 - [ ] FFT threading: expose `FFTW_THREADS` and ensure `set_fft_threads()` is called early in scripts/notebooks.
 - [ ] Float32 path: end-to-end float32 simulation option (solver, velocity, stats) with clear validation vs float64.
-- [ ] Allocate-once arrays in solver: reuse work arrays in `_nonlinear_term` to reduce allocations.
+- [x] Allocate-once arrays in solver: reuse work arrays in `_nonlinear_term` to reduce allocations.
 - [ ] Avoid repeated FFT plans: add optional warm-up at API init and reuse pyFFTW plans when available.
 - [ ] Dealias mask precompute: ensure `grid.dealias_mask` is dtype- and backend-compatible without casts in loop.
 - [ ] Vectorize structure/statistics: batch displacement evaluations to cut Python overhead; consider numba for hotspots.
+- [x] Reduce allocations in structure fallbacks via in-place power buffers.
 - [ ] I/O efficiency: use `.npz` compressed snapshots optionally; avoid writing large intermediates by default.
 
 ## Diagnostics – Scalar Energy Dissipation

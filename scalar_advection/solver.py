@@ -73,6 +73,18 @@ class ScalarAdvectionDiffusionSolver:
         self.grid = grid
         self.dtype = grid.dtype
         self.cdtype = grid.cdtype
+        # Work buffers (allocated lazily)
+        self._tmp_hat = None  # complex buffer for k-space products
+        self._adv_buf = None  # real buffer for advection term in physical space
+        # Precomputed complex wavenumber factors (for reuse in derivatives)
+        self._ikx = (1j * self.grid.kx).astype(self.cdtype)
+        self._iky = (1j * self.grid.ky).astype(self.cdtype)
+
+    def _ensure_work_buffers(self) -> None:
+        if self._tmp_hat is None or self._tmp_hat.shape != (self.grid.N, self.grid.N):
+            self._tmp_hat = np.empty((self.grid.N, self.grid.N), dtype=self.cdtype)
+        if self._adv_buf is None or self._adv_buf.shape != (self.grid.N, self.grid.N):
+            self._adv_buf = np.empty((self.grid.N, self.grid.N), dtype=self.dtype)
 
     # ------------------------------------------------------------------
     # Initial conditions
@@ -494,14 +506,31 @@ class ScalarAdvectionDiffusionSolver:
         uy: np.ndarray,
         F_hat: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        theta_x = ifft2(1j * self.grid.kx * theta_hat).real
-        theta_y = ifft2(1j * self.grid.ky * theta_hat).real
-        adv = ux * theta_x + uy * theta_y
-        N_hat = -fft2(adv).astype(self.cdtype)
+        # Ensure scratch buffers
+        self._ensure_work_buffers()
+
+        # theta_x = ifft2(i kx theta_hat).real
+        self._tmp_hat[...] = theta_hat
+        self._tmp_hat *= self._ikx
+        theta_x = ifft2(self._tmp_hat).real
+
+        # adv_buf = ux * theta_x (in-place)
+        np.multiply(ux, theta_x, out=self._adv_buf)
+
+        # theta_y = ifft2(i ky theta_hat).real
+        self._tmp_hat[...] = theta_hat
+        self._tmp_hat *= self._iky
+        theta_y = ifft2(self._tmp_hat).real
+
+        # adv_buf += uy * theta_y (reusing theta_y as a temp if safe)
+        np.multiply(uy, theta_y, out=theta_y)
+        np.add(self._adv_buf, theta_y, out=self._adv_buf)
+
+        N_hat = -fft2(self._adv_buf)
         N_hat *= self.grid.dealias_mask
         if F_hat is not None:
-            N_hat += F_hat
-        return N_hat
+            N_hat = N_hat + F_hat
+        return N_hat.astype(self.cdtype, copy=False)
 
     def _etdrk4_coeffs(self, Llin: np.ndarray, dt: float, M: int = 16) -> Tuple[np.ndarray, ...]:
         E = np.exp(Llin * dt)
