@@ -33,7 +33,7 @@ This checklist organizes the upcoming work around performance, diagnostics, and 
 - [x] Implement time-varying Fourier-based velocity with random coefficients scaled to enforce temporal SF ∝ (Δt)^beta.
 - [x] Default `beta = alpha`; allow user override; document valid ranges and physical interpretation.
 - [x] Provide `TemporalVelocityProcess` interface (get_velocity/step) as `FourierTemporalVelocityProcess`.
-- [ ] Add diagnostics to measure temporal SF from point probes and confirm scaling.
+- [x] Add diagnostics to measure temporal SF from point probes and confirm scaling.
 - [ ] Optionally compare with OU and add scale-dependent τ_k.
 
 ## Experiments/CLI
@@ -47,6 +47,8 @@ This checklist organizes the upcoming work around performance, diagnostics, and 
 ## Docs & Notebooks
 
 - [ ] Update README and docs to describe `alpha`/`beta` parameters and dissipation diagnostics.
+- [x] Add temporal diagnostics HOWTO (docs/TEMPORAL_DIAGNOSTICS.md).
+- [x] Add profiling HOWTO (docs/PROFILING.md).
 - [ ] Refresh notebooks to import scripts from `experiments/` and read from `experimental_results/`.
 - [ ] Add short HOWTO for running time-varying velocity experiments and interpreting outputs.
 

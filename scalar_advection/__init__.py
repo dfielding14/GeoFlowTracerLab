@@ -22,6 +22,7 @@ from .structure import (
 )
 from .fft import FFT_BACKEND, set_fftw_threads, warm_fft_cache
 from .fractal import box_counting
+from .temporal import TemporalSFResult, measure_temporal_structure_function
 
 __all__ = [
     "ScalarAdvectionAPI",
@@ -47,4 +48,6 @@ __all__ = [
     "set_fftw_threads",
     "warm_fft_cache",
     "box_counting",
+    "TemporalSFResult",
+    "measure_temporal_structure_function",
 ]

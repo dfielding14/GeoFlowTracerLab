@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .fft import FFT_BACKEND, fft2, ifft2
+from .fft import enable_fft_profiling, get_fft_profile
 from .grid import SpectralGrid
 
 
@@ -41,6 +42,9 @@ class ScalarConfig:
     save_to_disk: bool = False
     save_dir: Optional[str] = None
     integrator: str = "etdrk4"
+    # Profiling controls
+    profile: bool = False
+    profile_fft: bool = False
 
 
 @dataclass
@@ -140,6 +144,12 @@ class ScalarAdvectionDiffusionSolver:
         diagnostics = SimulationDiagnostics(dt=dt, kappa=kappa, n_steps=nsteps)
         if config.output_frames:
             diagnostics.frames = []
+        # Enable FFT profiling if requested
+        if getattr(config, "profile_fft", False):
+            enable_fft_profiling(True)
+
+        # Walltime accumulators
+        nl_time_total = 0.0
 
         theta_hat = fft2(theta0).astype(self.cdtype)
         Llin = -kappa * self.grid.k2
@@ -198,15 +208,21 @@ class ScalarAdvectionDiffusionSolver:
 
                 theta_hat = E * theta_hat + f1 * Nv + 2.0 * f2 * (Na + Nb) + f3 * Nc
             elif integrator == "rk4":
+                t0 = time.perf_counter() if config.profile else None
                 k1 = rhs(theta_hat)
                 k2 = rhs(theta_hat + 0.5 * dt * k1)
                 k3 = rhs(theta_hat + 0.5 * dt * k2)
                 k4 = rhs(theta_hat + dt * k3)
                 theta_hat = theta_hat + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+                if config.profile:
+                    nl_time_total += (time.perf_counter() - t0)
             else:  # Heun / RK2
+                t0 = time.perf_counter() if config.profile else None
                 k1 = rhs(theta_hat)
                 k2 = rhs(theta_hat + dt * k1)
                 theta_hat = theta_hat + 0.5 * dt * (k1 + k2)
+                if config.profile:
+                    nl_time_total += (time.perf_counter() - t0)
 
             tnow = n * dt
             if config.save_every is not None and (n % config.save_every == 0 or n == nsteps):
@@ -256,6 +272,14 @@ class ScalarAdvectionDiffusionSolver:
             print(f"Simulation complete. Final time: {t_end:.3f}")
             if snapshot_dir and snapshot_count > 0:
                 print(f"  Saved {snapshot_count} snapshots to: {snapshot_dir}/")
+
+        # Attach profiling info if enabled
+        if config.profile or config.profile_fft:
+            prof = {"nonlinear_time_total": nl_time_total, "steps": nsteps}
+            if config.profile_fft:
+                prof["fft"] = get_fft_profile(reset=True)
+            # attach as attribute to diagnostics for convenience
+            diagnostics.profile = prof  # type: ignore[attr-defined]
 
         return theta_final, diagnostics
 
