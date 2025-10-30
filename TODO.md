@@ -18,7 +18,7 @@ This checklist organizes the upcoming work around performance, diagnostics, and 
 - [x] Add time-resolved scalar dissipation rate output: store `epsilon_theta(t) = 2 kappa <|∇θ|^2>` each step.
 - [x] Return and persist dissipation time series in `SimulationDiagnostics` (array + cumulative integral).
 - [x] Plot helpers: quick plot of `epsilon_theta(t)` and cumulative dissipation vs time; save alongside runs.
-- [ ] Back-fill into `run_wavelet_scalar_experiment.py` and single-run driver; include in summaries.
+- [x] Back-fill into `run_wavelet_scalar_experiment.py` and single-run driver; include in summaries.
 
 ## Velocity Model – Spatial Structure Function Slope
 
