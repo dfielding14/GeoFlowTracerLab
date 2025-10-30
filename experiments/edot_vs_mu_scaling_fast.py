@@ -37,6 +37,7 @@ from scalar_advection import ScalarAdvectionAPI  # noqa: E402
 from scalar_advection.solver import ScalarConfig  # noqa: E402
 from scalar_advection.velocity import generate_divfree_field  # noqa: E402
 from scalar_advection.structure import structure_functions  # noqa: E402
+from scalar_advection.fitting import best_powerlaw_fit  # noqa: E402
 
 
 @dataclass
@@ -198,16 +199,46 @@ def main(argv: Sequence[str] | None = None) -> int:
             mus.append(mu)
             np.savez_compressed(pe_dir / "theta_final.npz", theta=theta_final)
 
-            sf = structure_functions(theta_final, orders=(1,2), n_ell_bins=cfg.n_ell_bins, n_disp_total=cfg.n_disp_total, seed=0, use_fft_for_p2=True)
+            sf = structure_functions(
+                theta_final,
+                orders=(1, 2, 3, 4, 6, 8, 10),
+                n_ell_bins=cfg.n_ell_bins,
+                n_disp_total=cfg.n_disp_total,
+                seed=0,
+                use_fft_for_p2=True,
+            )
             np.savez_compressed(pe_dir / "theta_structure_functions.npz", **sf)
-            # Plot structure functions
+            # Plot structure functions with power-law fits and slope subpanel
             r = sf["r"]; orders = sf["orders"]; S = sf["S"]
-            fig_sf, ax_sf = plt.subplots(figsize=(5.4, 4.2), dpi=150)
+            root_curves = np.array([np.power(np.maximum(S[j], 1e-30), 1.0 / orders[j]) for j in range(len(orders))])
+            Nloc = theta_final.shape[0]
+            fit_lo = max(8.0, Nloc / 256.0)
+            fit_hi = Nloc / 4.0
+            def sliding_log_slope(rvals: np.ndarray, yvals: np.ndarray, window: int = 4) -> tuple[np.ndarray, np.ndarray]:
+                if rvals.size < window:
+                    return np.array([]), np.array([])
+                lr = np.log(rvals); ly = np.log(np.maximum(yvals, 1e-30))
+                slopes, centers = [], []
+                for i in range(rvals.size - window + 1):
+                    idx = slice(i, i + window)
+                    m, c = np.polyfit(lr[idx], ly[idx], 1)
+                    slopes.append(m); centers.append(np.exp(np.mean(lr[idx])))
+                return np.array(centers), np.array(slopes)
+            fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(7.2, 6.2), dpi=150, sharex=True, constrained_layout=True, gridspec_kw={"height_ratios":[2.4,1.0], "hspace":0.05})
+            cols = plt.cm.tab10.colors
             for j, p in enumerate(orders):
-                ax_sf.loglog(r, S[j], 'o-', ms=3, label=f"p={p:g}")
-            ax_sf.set_xlabel(r"$\ell/\Delta x$"); ax_sf.set_ylabel(r"$S_p(\ell)$")
-            ax_sf.grid(True, which='both', ls=':', lw=0.6); ax_sf.legend(frameon=False)
-            fig_sf.tight_layout(); fig_sf.savefig(pe_dir / "theta_structure_functions.png", bbox_inches='tight'); plt.close(fig_sf)
+                y = root_curves[j]
+                color = cols[j % len(cols)]
+                ax_top.loglog(r, y, 'o-', ms=3, lw=1.6, color=color, label=f"p={p:g}")
+                fit = best_powerlaw_fit(r, y, min_points=6, min_decades=0.5, x_range=(fit_lo, fit_hi))
+                if fit is not None:
+                    ax_top.loglog(fit.xseg, fit.yfit, '--', lw=2.0, color=color, alpha=0.8)
+                cen, sl = sliding_log_slope(r, y, window=4)
+                if cen.size:
+                    ax_bot.semilogx(cen, sl, '-', lw=1.4, color=color)
+            ax_top.set_ylabel(r"$(S_p)^{1/p}$"); ax_top.grid(True, which='both', ls=':', lw=0.6); ax_top.legend(frameon=False, ncol=1, loc='lower right')
+            ax_bot.set_xlabel(r"$\ell/\Delta x$"); ax_bot.set_ylabel(r"$d\log(S_p^{1/p})/d\log\ell$"); ax_bot.grid(True, which='both', ls=':', lw=0.6)
+            fig.savefig(pe_dir / "theta_structure_functions.png", bbox_inches='tight'); plt.close(fig)
 
             x = np.linspace(-cfg.L/2, cfg.L/2, cfg.N, endpoint=False)
             y = np.linspace(-cfg.L/2, cfg.L/2, cfg.N, endpoint=False)
