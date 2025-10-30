@@ -50,7 +50,7 @@ class RunParams:
     L: float = 1.0
     dtype: np.dtype = np.float32
     t_end: float = 8.0
-    cfl: float = 0.9
+    cfl: float = 0.7
     integrator: str = "heun"
     outputs: int = 200
     lam_min: float = 8.0
@@ -70,7 +70,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--t-end", type=float, default=8.0)
     p.add_argument("--integrator", choices=("rk4","etdrk4","heun"), default="heun")
-    p.add_argument("--cfl", type=float, default=0.9)
+    p.add_argument("--cfl", type=float, default=0.7)
     return p.parse_args(argv)
 
 
@@ -220,8 +220,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             np.savez_compressed(pe_dir / "theta_final.npz", theta=theta_final)
 
             # Final theta structure functions
-            sf = structure_functions(theta_final, orders=(1,2,3), n_ell_bins=cfg.n_ell_bins, n_disp_total=cfg.n_disp_total, seed=0, use_fft_for_p2=True)
+            sf = structure_functions(
+                theta_final,
+                orders=(1, 2, 3),
+                n_ell_bins=cfg.n_ell_bins,
+                n_disp_total=cfg.n_disp_total,
+                seed=0,
+                use_fft_for_p2=True,
+            )
             np.savez_compressed(pe_dir / "theta_structure_functions.npz", **sf)
+            # Plot structure functions
+            r = sf["r"]; orders = sf["orders"]; S = sf["S"]
+            fig_sf, ax_sf = plt.subplots(figsize=(6.0, 4.6), dpi=160)
+            for j, p in enumerate(orders):
+                ax_sf.loglog(r, S[j], 'o-', ms=3, label=f"p={p:g}")
+            ax_sf.set_xlabel(r"$\ell/\Delta x$"); ax_sf.set_ylabel(r"$S_p(\ell)$")
+            ax_sf.grid(True, which='both', ls=':', lw=0.6); ax_sf.legend(frameon=False)
+            fig_sf.tight_layout(); fig_sf.savefig(pe_dir / "theta_structure_functions.png", bbox_inches='tight'); plt.close(fig_sf)
 
             # Build background gradient and save frames + movie
             x = np.linspace(-cfg.L/2, cfg.L/2, cfg.N, endpoint=False)
@@ -242,6 +257,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             etas = np.array(etas)
             ratio = np.divide(edots, etas, out=np.zeros_like(edots), where=etas>0)
             np.savez_compressed(pe_dir / "edot_timeseries.npz", t=times, edot=edots, Etheta=etas, ratio=ratio)
+            # Plot Edot and ratio time series
+            fig_ts, (ax_e, ax_r) = plt.subplots(
+                2, 1, figsize=(6.6, 5.4), dpi=160, sharex=True, constrained_layout=True,
+                gridspec_kw={"height_ratios": [2.0, 1.0], "hspace": 0.05},
+            )
+            ax_e.plot(times, edots, '-o', ms=3)
+            ax_e.set_ylabel(r"$\dot{E}_\theta$")
+            ax_e.grid(True, ls=':', lw=0.6)
+            ax_r.plot(times, ratio, '-o', ms=3)
+            ax_r.set_xlabel("time")
+            ax_r.set_ylabel(r"$\dot{E}_\theta / E_\theta$")
+            ax_r.grid(True, ls=':', lw=0.6)
+            fig_ts.savefig(pe_dir / "edot_timeseries.png", bbox_inches='tight'); plt.close(fig_ts)
 
             # Late-time median (t>4)
             late = times > 4.0
