@@ -1,0 +1,78 @@
+{
+  "scalar_runs": [
+    {
+      "dt": 0.00026371308016877635,
+      "edot": 0.005447324149326783,
+      "grad_sq_integral": 3.074679336652864,
+      "kappa": 0.001771672279573977,
+      "n_steps": 948,
+      "peclet": 1250.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e3.1/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e3.1/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e3.1/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        20.0,
+        96.0
+      ]
+    },
+    {
+      "dt": 0.00026371308016877635,
+      "edot": 0.0034813922955754056,
+      "grad_sq_integral": 6.213976358178829,
+      "kappa": 0.000560251937713474,
+      "n_steps": 948,
+      "peclet": 3952.847075210474,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e3.6/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e3.6/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e3.6/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        17.0,
+        69.0
+      ]
+    },
+    {
+      "dt": 0.00026371308016877635,
+      "edot": 0.0021453908129777893,
+      "grad_sq_integral": 12.109411390331758,
+      "kappa": 0.00017716722504701465,
+      "n_steps": 948,
+      "peclet": 12500.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e4.1/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e4.1/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e4.1/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        15.5,
+        63.5
+      ]
+    },
+    {
+      "dt": 0.00026371308016877635,
+      "edot": 0.001217037951513496,
+      "grad_sq_integral": 21.723047607484006,
+      "kappa": 5.6025193771347404e-05,
+      "n_steps": 948,
+      "peclet": 39528.47075210474,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e4.6/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e4.6/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/test_N256_20251019_023917/scalar_pe_1e4.6/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        13.5,
+        54.0
+      ]
+    }
+  ],
+  "velocity_summary": {
+    "n_displacements": 4096,
+    "n_ell_bins": 40,
+    "orders": [
+      1,
+      2,
+      3,
+      4,
+      6,
+      8,
+      10
+    ],
+    "urms": 2.214590311050415
+  }
+}

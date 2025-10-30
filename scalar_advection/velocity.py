@@ -8,7 +8,7 @@ previously bundled inside ``turbulent_scalar_sim``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import numpy as np
 
@@ -257,4 +257,180 @@ __all__ = [
     "VelocityFieldGenerator",
     "generate_velocity_field",
     "generate_divfree_field",
+]
+
+# ---------------------------------------------------------------------------
+# Time-evolving wavelet velocity via Ornstein–Uhlenbeck process
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WaveletOUConfig:
+    """
+    Configuration for a time-evolving, divergence-free wavelet velocity field
+    where the underlying stochastic coefficients follow an
+    Ornstein–Uhlenbeck (OU) process with correlation timescale ``tau``.
+
+    Notes
+    -----
+    - The spatial field is built from a superposition of wavelet bands
+      between ``lam_min`` and ``lam_max``. Within each time step, the
+      streamfunction's per-band coefficient field is updated using the exact
+      OU discretization z_{t+dt} = rho z_t + sqrt(1-rho^2) * eta, with
+      rho = exp(-dt/tau) and eta ~ N(0,1) i.i.d. in physical space.
+    - The resulting velocity is incompressible by construction and is scaled
+      to have approximately ``amp`` speed standard deviation each time it is
+      synthesized (matching the static generator convention).
+    """
+
+    N: int = 256
+    lam_min: float = 8.0
+    lam_max: float = 64.0
+    slope: float = -5.0 / 3.0
+    wavelet: str = "mexh"  # or 'haar'
+    lam_ref: Optional[float] = None
+    amp: float = 1.0
+    sparsity: float = 0.0  # probability of zeroing Fourier coefficients per band
+    seed: Optional[int] = None
+    tau: float = 0.1  # OU correlation timescale (simulation time units)
+    dtype: np.dtype = np.float64
+
+
+class WaveletOUTemporalVelocity:
+    """
+    Time-evolving divergence-free velocity built from wavelets with OU dynamics.
+
+    Usage
+    -----
+    >>> cfg = WaveletOUConfig(N=256, lam_min=4, lam_max=64, tau=0.2, amp=1.0)
+    >>> vel = WaveletOUTemporalVelocity(cfg)
+    >>> ux, uy = vel.get_velocity()  # t = 0
+    >>> vel.step(0.01)
+    >>> ux2, uy2 = vel.get_velocity()  # t = 0.01
+    """
+
+    def __init__(self, config: WaveletOUConfig):
+        self.cfg = config
+        self.N = int(config.N)
+        self.dtype = np.float32 if config.dtype == np.float32 else np.float64
+        self.cdtype = np.complex64 if self.dtype == np.float32 else np.complex128
+
+        rng = np.random.default_rng(config.seed)
+        self.rng = rng
+        self.t = 0.0
+
+        # Wavenumbers and helpers
+        kx = 2 * np.pi * np.fft.fftfreq(self.N)
+        ky = 2 * np.pi * np.fft.fftfreq(self.N)
+        self.KX, self.KY = np.meshgrid(kx, ky, indexing="xy")
+        self.K = np.hypot(self.KX, self.KY)
+
+        # Band limits and reference scale
+        lam_min = float(config.lam_min)
+        lam_max = float(config.lam_max)
+        if lam_min <= 0 or lam_max <= 0 or lam_min > lam_max:
+            raise ValueError("Require 0 < lam_min <= lam_max")
+        self.kmin = 2 * np.pi / lam_max
+        self.kmax = 2 * np.pi / lam_min
+        lam_ref = np.sqrt(lam_min * lam_max) if config.lam_ref is None else float(config.lam_ref)
+        self.k_ref = 2 * np.pi / lam_ref
+
+        n_scales = max(1, int(np.ceil(np.log2(lam_max / lam_min))) + 1)
+        self.lams = lam_min * 2.0 ** np.linspace(0, np.log2(lam_max / lam_min), n_scales)
+
+        # Precompute wavelet frequency responses Wk and band amplitudes Aj
+        self.Wk: List[np.ndarray] = []
+        self.Aj: List[float] = []
+        for lam in self.lams:
+            if config.wavelet.lower().startswith("mex"):
+                Wk = _mexhat_Wk(self.K, lam, self.N)
+            elif config.wavelet.lower().startswith("haar"):
+                Wk = _haar_Wk(self.N, lam)
+            else:
+                raise ValueError("wavelet must be 'mexh' or 'haar'.")
+            kj = 2 * np.pi / lam
+            Aj = (kj / self.k_ref) ** ((config.slope - 1.0) / 2.0)
+            self.Wk.append(Wk.astype(self.cdtype, copy=False))
+            self.Aj.append(float(Aj))
+
+        # Band-pass mask in k-space
+        self.band = (self.K >= self.kmin) & (self.K <= self.kmax)
+
+        # Optional sparsity masks in Fourier space, fixed in time
+        self.masks_k: List[Optional[np.ndarray]] = []
+        if config.sparsity > 0:
+            for _ in self.lams:
+                m = (rng.random((self.N, self.N)) > config.sparsity)
+                self.masks_k.append(m)
+        else:
+            self.masks_k = [None for _ in self.lams]
+
+        # OU state per scale in physical space (real fields)
+        self.z_fields: List[np.ndarray] = [rng.normal(size=(self.N, self.N)).astype(self.dtype) for _ in self.lams]
+
+        # Cached velocity
+        self._ux: Optional[np.ndarray] = None
+        self._uy: Optional[np.ndarray] = None
+        self._dirty = True
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reset OU state and time (t=0)."""
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        rng = self.rng
+        self.z_fields = [rng.normal(size=(self.N, self.N)).astype(self.dtype) for _ in self.lams]
+        self.t = 0.0
+        self._dirty = True
+
+    def step(self, dt: float) -> None:
+        """Advance the OU process by time step ``dt`` using exact update."""
+        dt = float(dt)
+        if dt == 0.0:
+            return
+        rho = np.exp(-dt / max(self.cfg.tau, 1e-30))
+        sig = np.sqrt(max(0.0, 1.0 - rho * rho))
+        for j in range(len(self.z_fields)):
+            eta = self.rng.normal(size=self.z_fields[j].shape).astype(self.dtype)
+            self.z_fields[j] = (rho * self.z_fields[j] + sig * eta).astype(self.dtype, copy=False)
+        self.t += dt
+        self._dirty = True
+
+    def get_velocity(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return the current velocity field (ux, uy)."""
+        if self._dirty or self._ux is None or self._uy is None:
+            self._synthesize_velocity()
+        return self._ux, self._uy
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _synthesize_velocity(self) -> None:
+        Psi_k = np.zeros((self.N, self.N), dtype=self.cdtype)
+        for j, lam in enumerate(self.lams):
+            Zk = np.fft.fft2(self.z_fields[j]).astype(self.cdtype, copy=False)
+            if self.masks_k[j] is not None:
+                Zk *= self.masks_k[j]
+            Psi_k += self.Aj[j] * self.Wk[j] * Zk
+
+        Psi_k *= self.band
+        Ux_k = 1j * self.KY * Psi_k
+        Uy_k = -1j * self.KX * Psi_k
+        ux = np.fft.ifft2(Ux_k).real.astype(self.dtype, copy=False)
+        uy = np.fft.ifft2(Uy_k).real.astype(self.dtype, copy=False)
+
+        spd = np.hypot(ux, uy)
+        cur = float(spd.std())
+        if cur > 0:
+            scale = float(self.cfg.amp) / cur
+            ux *= scale
+            uy *= scale
+
+        self._ux = ux
+        self._uy = uy
+        self._dirty = False
+
+
+__all__ += [
+    "WaveletOUConfig",
+    "WaveletOUTemporalVelocity",
 ]

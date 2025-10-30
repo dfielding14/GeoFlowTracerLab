@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,9 @@ import matplotlib
 # Ensure headless plotting works even if a display is unavailable.
 matplotlib.use("Agg")
 
+# Encourage pyFFTW to use a sensible default thread count unless the user overrides it.
+os.environ.setdefault("FFTW_THREADS", "8")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import cmasher as cmr
@@ -38,17 +42,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scalar_advection import (
-    ScalarAdvectionAPI,
-    ScalarConfig,
-    generate_divfree_field,
-    plot_structure_functions,
-    structure_functions,
-)
+from scalar_advection import ScalarAdvectionAPI, ScalarConfig, generate_divfree_field, structure_functions
 from scalar_advection.binning import find_ell_bin_edges
 from scalar_advection.fitting import PowerLawFit, best_powerlaw_fit
 from scalar_advection.structure import generate_displacements
-from matplotlib.ticker import FixedLocator, FuncFormatter
 
 
 DEFAULT_ORDERS: Tuple[int, ...] = (1, 2, 3, 4, 6, 8, 10)
@@ -114,6 +111,90 @@ def best_fixed_slope_segment(
                     yfit=yfit,
                 )
     return best
+
+
+def sliding_log_slope(rvals: np.ndarray, yvals: np.ndarray, window: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    if rvals.size < window:
+        return np.array([]), np.array([])
+    lr = np.log(rvals)
+    ly = np.log(np.maximum(yvals, 1e-30))
+    slopes = []
+    centers = []
+    for i in range(rvals.size - window + 1):
+        idx = slice(i, i + window)
+        coeffs = np.polyfit(lr[idx], ly[idx], 1)
+        slopes.append(coeffs[0])
+        centers.append(np.exp(np.mean(lr[idx])))
+    return np.array(centers), np.array(slopes)
+
+
+def plot_structure_with_slopes(
+    r: np.ndarray,
+    root_curves: np.ndarray,
+    orders: np.ndarray,
+    *,
+    title: str,
+    ylabel: str,
+    legend_fmt: str = "p={p:g}",
+    fit_min_r: float | None = None,
+    fit_max_r: float | None = None,
+    fit_min_decades: float = 0.5,
+    fname: Path | str,
+) -> None:
+    colors = plt.cm.tab10.colors
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(8.0, 7.0),
+        dpi=160,
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.5, 1.0], "hspace": 0.05},
+    )
+
+    for j, p in enumerate(orders):
+        y = root_curves[j]
+        color = colors[j % len(colors)]
+        label = legend_fmt.format(p=p)
+        ax_top.loglog(r, y, "-", lw=1.8, color=color, label=label)
+
+        x_range = None
+        if fit_min_r is not None or fit_max_r is not None:
+            lo = fit_min_r if fit_min_r is not None else r.min()
+            hi = fit_max_r if fit_max_r is not None else r.max()
+            x_range = (lo, hi)
+
+        fit = best_powerlaw_fit(
+            r,
+            y,
+            min_points=6,
+            min_decades=fit_min_decades,
+            x_range=x_range,
+        )
+        if fit is not None:
+            ax_top.loglog(
+                fit.xseg,
+                fit.yfit,
+                "--",
+                lw=2.3,
+                color=color,
+                alpha=0.75,
+            )
+
+        centers, slopes = sliding_log_slope(r, y, window=4)
+        if centers.size:
+            ax_bot.semilogx(centers, slopes, "-", lw=1.6, color=color)
+
+    ax_top.set_title(title)
+    ax_top.set_ylabel(ylabel)
+    ax_top.grid(True, which="both", ls=":", lw=0.6)
+    ax_top.legend(frameon=False, ncol=1, loc="lower right")
+
+    ax_bot.set_xlabel(r"separation $\ell / \Delta x$")
+    ax_bot.set_ylabel(r"$d\log(S_p^{1/p})/d\log \ell$")
+    ax_bot.grid(True, which="both", ls=":", lw=0.6)
+
+    fig.savefig(fname, bbox_inches="tight")
+    plt.close(fig)
 
 
 @dataclass
@@ -260,7 +341,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def default_mode_settings(mode: str) -> Tuple[int, List[float]]:
-    full_pe = [10 ** 4.5, 10 ** 4.0, 10 ** 3.5]
+    full_pe = [10 ** 4.0, 10 ** 4.5, 10 ** 5.0, 10 ** 5.5]
     if mode == "full":
         return 2048, full_pe
     # For test mode scale Peclet with grid size ratio (256/2048 = 1/8).
@@ -272,6 +353,9 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
     default_grid, default_pe = default_mode_settings(args.mode)
     grid = args.grid or default_grid
     peclet_values = args.peclet or default_pe
+    if args.peclet is None and args.mode == "test" and args.grid:
+        scale = grid / 2048.0
+        peclet_values = [pe * scale for pe in default_mode_settings("full")[1]]
     dtype = np.float32 if args.dtype == "float32" else np.float64
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -347,13 +431,19 @@ def save_velocity_diagnostics(
     )
     np.savez_compressed(velocity_dir / "velocity_structure_functions.npz", **sf_velocity)
 
-    plot_structure_functions(
-        sf_velocity,
+    orders_arr = np.asarray(sf_velocity["orders"], dtype=float)
+    root_curves = np.array(
+        [np.power(np.maximum(sf_velocity["mag"][j], 1e-30), 1.0 / orders_arr[j]) for j in range(len(orders_arr))]
+    )
+    plot_structure_with_slopes(
+        sf_velocity["r"],
+        root_curves,
+        orders_arr,
         title=f"Velocity structure functions (N={ux.shape[0]})",
-        plot_long_and_tran=False,
+        ylabel=r"$(S_p)^{1/p}$",
+        legend_fmt="p={p:g}",
         fname=velocity_dir / "velocity_structure_functions.png",
-        fit_min_r=None,
-        fit_max_r=None,
+        fit_min_decades=0.5,
     )
 
     urms = float(np.sqrt(np.mean(ux**2 + uy**2)))
@@ -391,76 +481,24 @@ def scalar_structure_function_plot(
     fit_max_r = N / 4.0
 
     r = sf_scalar["r"]
-    orders_arr = sf_scalar["orders"]
+    orders_arr = np.asarray(sf_scalar["orders"], dtype=float)
     curves = sf_scalar["S"]
-    colors = plt.cm.tab10.colors
-
     root_curves = np.array(
         [np.power(np.maximum(curves[j], 1e-30), 1.0 / orders_arr[j]) for j in range(len(orders_arr))]
     )
 
-    fig, (ax_sf, ax_slope) = plt.subplots(
-        2,
-        1,
-        figsize=(8.0, 7.0),
-        dpi=160,
-        sharex=True,
-        gridspec_kw={"height_ratios": [2.5, 1.0], "hspace": 0.05},
+    plot_structure_with_slopes(
+        r,
+        root_curves,
+        orders_arr,
+        title=f"Scalar structure functions (final, N={N})",
+        ylabel=r"$(S_p)^{1/p}$",
+        legend_fmt="p={p:g}",
+        fit_min_r=fit_min_r,
+        fit_max_r=fit_max_r,
+        fit_min_decades=0.5,
+        fname=fname,
     )
-
-    for j, p in enumerate(orders_arr):
-        y = root_curves[j]
-        color = colors[j % len(colors)]
-        ax_sf.loglog(r, y, "-", lw=1.8, color=color, label=fr"p={p:g}")
-        fit = best_powerlaw_fit(
-            r,
-            y,
-            min_points=6,
-            min_decades=0.5,
-            x_range=(fit_min_r, fit_max_r),
-        )
-        if fit is not None:
-            ax_sf.loglog(
-                fit.xseg,
-                fit.yfit,
-                "--",
-                lw=2.4,
-                color=color,
-                alpha=0.75,
-            )
-
-    ax_sf.set_ylabel(r"$(S_p)^{1/p}$")
-    ax_sf.set_title(f"Scalar structure functions (final, N={N})")
-    ax_sf.grid(True, which="both", ls=":", lw=0.6)
-    ax_sf.legend(frameon=False, ncol=1, loc="lower right")
-
-    def sliding_log_slope(rvals: np.ndarray, yvals: np.ndarray, window: int = 4) -> Tuple[np.ndarray, np.ndarray]:
-        if rvals.size < window:
-            return np.array([]), np.array([])
-        lr = np.log(rvals)
-        ly = np.log(np.maximum(yvals, 1e-30))
-        slopes = []
-        centers = []
-        for i in range(rvals.size - window + 1):
-            idx = slice(i, i + window)
-            coeffs = np.polyfit(lr[idx], ly[idx], 1)
-            slopes.append(coeffs[0])
-            centers.append(np.exp(np.mean(lr[idx])))
-        return np.array(centers), np.array(slopes)
-
-    for j, p in enumerate(orders_arr):
-        centers, slopes = sliding_log_slope(r, root_curves[j], window=4)
-        if centers.size == 0:
-            continue
-        color = colors[j % len(colors)]
-        ax_slope.semilogx(centers, slopes, "-", lw=1.6, color=color, label=fr"p={p:g}")
-
-    ax_slope.set_xlabel(r"separation $\ell / \Delta x$")
-    ax_slope.set_ylabel(r"$d\log (S_p^{1/p}) / d\log \ell$")
-    ax_slope.grid(True, which="both", ls=":", lw=0.6)
-
-    fig.savefig(fname, bbox_inches="tight")
-    plt.close(fig)
     return sf_scalar
 
 
@@ -552,11 +590,19 @@ def plot_yaglom(yaglom_data: dict, fname: Path) -> Tuple[float | None, PowerLawF
         x_range=fit_range,
     )
 
-    fig, ax = plt.subplots(figsize=(6.0, 4.5), dpi=160)
-    ax.loglog(r, y, "o-", lw=1.6, label=r"$\langle | \delta u | | \delta \theta |^2 \rangle$")
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(6.0, 6.2),
+        dpi=160,
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.4, 1.0], "hspace": 0.05},
+    )
+
+    ax_top.loglog(r, y, "o-", lw=1.6, label=r"$\langle | \delta u | | \delta \theta |^2 \rangle$")
     slope = None
     if fit is not None:
-        ax.loglog(
+        ax_top.loglog(
             fit.xseg,
             fit.yfit,
             "k--",
@@ -565,47 +611,24 @@ def plot_yaglom(yaglom_data: dict, fname: Path) -> Tuple[float | None, PowerLawF
         )
         slope = fit.m
     if slope_one_fit is not None:
-        ax.loglog(
+        ax_top.loglog(
             slope_one_fit.xseg,
             slope_one_fit.yfit,
             "k-.",
             lw=2.0,
             label=fr"slope $1$: $\ell/\Delta x \in [{slope_one_fit.xseg[0]:.1f}, {slope_one_fit.xseg[-1]:.1f}]$",
         )
-    ax.set_xlabel(r"separation $\ell / \Delta x$")
-    ax.set_ylabel(r"$\langle | \delta u | | \delta \theta |^2 \rangle$")
-    ax.grid(True, which="both", ls=":", lw=0.6)
+    ax_top.set_ylabel(r"$\langle | \delta u | | \delta \theta |^2 \rangle$")
+    ax_top.grid(True, which="both", ls=":", lw=0.6)
+    ax_top.legend(frameon=False)
 
-    def to_fraction(x):
-        return (x * dx) / L
+    centers, slopes = sliding_log_slope(r, y, window=4)
+    if centers.size:
+        ax_bot.semilogx(centers, slopes, "-", lw=1.6)
+    ax_bot.set_xlabel(r"separation $\ell / \Delta x$")
+    ax_bot.set_ylabel(r"$d\log Y / d\log \ell$")
+    ax_bot.grid(True, which="both", ls=":", lw=0.6)
 
-    def from_fraction(x):
-        return (x * L) / dx
-
-    ax_top = ax.secondary_xaxis("top", functions=(to_fraction, from_fraction))
-    ax_top.set_xlabel(r"$\ell / L$")
-    ax_top.set_xscale("log")
-
-    frac_limits = to_fraction(np.array(ax.get_xlim()))
-    ax_top.set_xlim(frac_limits[0], frac_limits[1])
-
-    n_levels = int(np.ceil(np.log2(N)))
-    candidate = 1.0 / (2.0 ** np.arange(1, n_levels + 1, dtype=float))
-    valid = candidate[(candidate >= min(frac_limits)) & (candidate <= max(frac_limits))]
-    if valid.size:
-        ax_top.xaxis.set_major_locator(FixedLocator(valid))
-
-        def _fmt_fraction(val: float, _pos: int) -> str:
-            if val <= 0:
-                return ""
-            denom = int(round(1.0 / val))
-            if denom > 0 and np.isclose(val, 1.0 / denom, rtol=1e-6, atol=1e-9):
-                return rf"$1/{denom}$"
-            return f"{val:.3g}"
-
-        ax_top.xaxis.set_major_formatter(FuncFormatter(_fmt_fraction))
-
-    ax.legend(frameon=False)
     fig.savefig(fname, bbox_inches="tight")
     plt.close(fig)
     return slope, slope_one_fit
@@ -779,17 +802,43 @@ def run_scalar_case(
 def plot_edot_scaling(results: Sequence[ScalarRunResult], fname: Path) -> None:
     kappas = np.array([r.kappa for r in results], dtype=np.float64)
     edots = np.array([r.edot for r in results], dtype=np.float64)
+    order = np.argsort(kappas)
+    kappas = kappas[order]
+    edots = edots[order]
 
-    fig, ax = plt.subplots(figsize=(5.5, 4.5), dpi=160)
-    ax.loglog(kappas, edots, "o-", lw=2)
-    ax.set_xlabel(r"viscosity $\nu$")
-    ax.set_ylabel(r"$\nu \int_0^T \int_\Omega |\nabla \theta|^2 \, d\mathbf{x}\, dt$")
-    ax.grid(True, which="both", ls=":", lw=0.6)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(5.5, 6.0),
+        dpi=160,
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.4, 1.0], "hspace": 0.05},
+    )
 
-    fit = best_powerlaw_fit(kappas, edots, min_points=3, min_decades=0.3)
-    if fit is not None:
-        ax.loglog(fit.xseg, fit.yfit, "k--", lw=2.0, label=fr"fit: $\propto \nu^{{{fit.m:.3f}}}$")
-        ax.legend(frameon=False)
+    ax_top.loglog(kappas, edots, "o-", lw=2)
+    ax_top.set_ylabel(r"$\nu \int_0^T \int_\Omega |\nabla \theta|^2 \, d\mathbf{x}\, dt$")
+    ax_top.grid(True, which="both", ls=":", lw=0.6)
+
+    centers = np.array([])
+    slopes = np.array([])
+    if kappas.size >= 2:
+        logk = np.log10(kappas)
+        loge = np.log10(edots)
+        A = np.vstack([logk, np.ones_like(logk)]).T
+        m, c = np.linalg.lstsq(A, loge, rcond=None)[0]
+        fit_vals = 10 ** (m * logk + c)
+        ax_top.loglog(kappas, fit_vals, "k--", lw=2.0, label=fr"fit: $\propto \nu^{{{m:.3f}}}$")
+        ax_top.legend(frameon=False)
+
+        if kappas.size >= 2:
+            centers = np.sqrt(kappas[:-1] * kappas[1:])
+            slopes = np.diff(loge) / np.diff(logk)
+
+    if centers.size:
+        ax_bot.semilogx(centers, slopes, "-", lw=1.8)
+    ax_bot.set_xlabel(r"viscosity $\nu$")
+    ax_bot.set_ylabel(r"$d\log E / d\log \nu$")
+    ax_bot.grid(True, which="both", ls=":", lw=0.6)
 
     fig.savefig(fname, bbox_inches="tight")
     plt.close(fig)

@@ -1,0 +1,25 @@
+{
+  "cfl": 0.75,
+  "disp_seed": 0,
+  "dtype": "<class 'numpy.float32'>",
+  "fft_threads": 8,
+  "grid_size": 2048,
+  "integrator": "rk4",
+  "mean_grad": [
+    1.0,
+    0.0
+  ],
+  "mode": "full",
+  "n_disp_total": 4096,
+  "n_ell_bins": 40,
+  "peclet_values": [
+    10000.0,
+    31622.776601683792,
+    100000.0,
+    316227.7660168379
+  ],
+  "t_end": 0.25,
+  "velocity_seed": 1,
+  "warm_cache": true,
+  "yaglom_samples": 8192
+}

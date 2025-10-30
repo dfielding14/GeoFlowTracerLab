@@ -1,0 +1,19 @@
+{
+  "cfl": 0.6,
+  "disp_seed": 0,
+  "dtype": "<class 'numpy.float32'>",
+  "fft_threads": 8,
+  "grid": 2048,
+  "integrator": "etdrk4",
+  "mean_grad": [
+    1.0,
+    0.0
+  ],
+  "n_disp_total": 4096,
+  "n_ell_bins": 40,
+  "peclet": 10000000.0,
+  "t_end": 0.25,
+  "velocity_seed": 1,
+  "warm_cache": true,
+  "yaglom_samples": 8192
+}

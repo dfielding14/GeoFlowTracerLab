@@ -9,7 +9,12 @@ from typing import Dict, Tuple
 import numpy as np
 
 from .grid import SpectralGrid
-from .velocity import VelocityConfig, VelocityFieldGenerator
+from .velocity import (
+    VelocityConfig,
+    VelocityFieldGenerator,
+    WaveletOUConfig,
+    WaveletOUTemporalVelocity,
+)
 from .solver import ScalarAdvectionDiffusionSolver, ScalarConfig, SimulationDiagnostics
 from .spectra import (
     kinetic_energy_spectrum,
@@ -80,6 +85,21 @@ class ScalarAdvectionAPI:
     ) -> Tuple[np.ndarray, SimulationDiagnostics]:
         config = config or ScalarConfig()
         return self.solver.evolve(theta0, ux, uy, config, verbose=verbose)
+
+    def evolve_scalar_time_varying(
+        self,
+        theta0: np.ndarray,
+        velocity_process,
+        config: ScalarConfig | None = None,
+        *,
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, SimulationDiagnostics]:
+        """Evolve scalar with a time-dependent velocity process.
+
+        ``velocity_process`` must implement ``get_velocity()`` and ``step(dt)``.
+        """
+        config = config or ScalarConfig()
+        return self.solver.evolve_with_velocity_process(theta0, velocity_process, config, verbose=verbose)
 
     # ------------------------------------------------------------------
     # Statistics and diagnostics
@@ -177,6 +197,8 @@ class ScalarAdvectionAPI:
 __all__ = [
     "ScalarAdvectionAPI",
     "VelocityConfig",
+    "WaveletOUConfig",
+    "WaveletOUTemporalVelocity",
     "ScalarConfig",
     "SimulationDiagnostics",
     "kinetic_energy_spectrum",

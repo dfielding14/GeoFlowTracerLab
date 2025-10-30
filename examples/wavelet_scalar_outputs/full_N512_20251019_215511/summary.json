@@ -1,0 +1,153 @@
+{
+  "scalar_runs": [
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 0.007118851073493098,
+      "grad_sq_integral": 3.207940990558812,
+      "kappa": 0.0022191340471799073,
+      "n_steps": 2203,
+      "peclet": 1000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e3/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e3/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e3/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        37.0,
+        160.0
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 0.004755546750927643,
+      "grad_sq_integral": 6.428922250511674,
+      "kappa": 0.0007397113490599692,
+      "n_steps": 2203,
+      "peclet": 3000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e3.5/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e3.5/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e3.5/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        30.0,
+        130.0
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 0.0029274546656883923,
+      "grad_sq_integral": 13.191878469029954,
+      "kappa": 0.00022191340471799074,
+      "n_steps": 2203,
+      "peclet": 10000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e4/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e4/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e4/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        24.5,
+        105.5
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 0.001853481177830349,
+      "grad_sq_integral": 25.056816827074062,
+      "kappa": 7.397113490599691e-05,
+      "n_steps": 2203,
+      "peclet": 30000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e4.5/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e4.5/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e4.5/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        20.0,
+        85.5
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 0.0010818027162170555,
+      "grad_sq_integral": 48.74886749594143,
+      "kappa": 2.2191340471799074e-05,
+      "n_steps": 2203,
+      "peclet": 100000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e5/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e5/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e5/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        16.0,
+        69.5
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 0.0005749623659975123,
+      "grad_sq_integral": 77.72793627246342,
+      "kappa": 7.397113490599691e-06,
+      "n_steps": 2203,
+      "peclet": 300000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e5.5/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e5.5/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e5.5/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        14.5,
+        62.5
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 0.00022520550616541055,
+      "grad_sq_integral": 101.48350724986778,
+      "kappa": 2.2191340471799073e-06,
+      "n_steps": 2203,
+      "peclet": 1000000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e6/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e6/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e6/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        13.0,
+        56.0
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 8.242973058157085e-05,
+      "grad_sq_integral": 111.43499513198381,
+      "kappa": 7.397113490599692e-07,
+      "n_steps": 2203,
+      "peclet": 3000000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e6.5/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e6.5/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e6.5/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        13.0,
+        56.0
+      ]
+    },
+    {
+      "dt": 0.00011348161597821153,
+      "edot": 2.5609571410327547e-05,
+      "grad_sq_integral": 115.4034450639536,
+      "kappa": 2.2191340471799075e-07,
+      "n_steps": 2203,
+      "peclet": 10000000.0,
+      "structure_functions_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e7/scalar_structure_functions.npz",
+      "theta_final_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e7/theta_final.npy",
+      "yaglom_path": "examples/wavelet_scalar_outputs/full_N512_20251019_215511/scalar_pe_1e7/yaglom_stats.npz",
+      "yaglom_unit_slope_range": [
+        13.0,
+        56.0
+      ]
+    }
+  ],
+  "velocity_summary": {
+    "n_displacements": 4096,
+    "n_ell_bins": 40,
+    "orders": [
+      1,
+      2,
+      3,
+      4,
+      6,
+      8,
+      10
+    ],
+    "urms": 2.2191340471799075
+  }
+}

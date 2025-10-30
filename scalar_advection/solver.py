@@ -243,6 +243,203 @@ class ScalarAdvectionDiffusionSolver:
         return theta_final, diagnostics
 
     # ------------------------------------------------------------------
+    # Time-varying velocity evolution
+    # ------------------------------------------------------------------
+    def evolve_with_velocity_process(
+        self,
+        theta0: np.ndarray,
+        velocity_process,
+        config: ScalarConfig,
+        *,
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, SimulationDiagnostics]:
+        """
+        Evolve the scalar with a time-dependent velocity provided by a process
+        object exposing ``get_velocity() -> (ux, uy)`` and ``step(dt)``.
+
+        The advecting velocity is sampled at the appropriate stage times of the
+        chosen integrator (e.g., t, t+dt/2, t+dt for RK4/ETDRK4). Mean-gradient
+        forcing, if requested, is recomputed with the current velocity at each
+        stage.
+        """
+        theta0 = np.asarray(theta0, dtype=self.dtype)
+        ux0, uy0 = velocity_process.get_velocity()
+        ux0 = np.asarray(ux0, dtype=self.dtype)
+        uy0 = np.asarray(uy0, dtype=self.dtype)
+
+        dt, nsteps, kappa, t_end = self._resolve_time_controls(theta0, ux0, uy0, config)
+        diagnostics = SimulationDiagnostics(dt=dt, kappa=kappa, n_steps=nsteps)
+        if config.output_frames:
+            diagnostics.frames = []
+
+        theta_hat = fft2(theta0).astype(self.cdtype)
+        Llin = -kappa * self.grid.k2
+
+        Gx, Gy = config.mean_grad
+
+        def N_with_u(theta_hat_state: np.ndarray, ux: np.ndarray, uy: np.ndarray) -> np.ndarray:
+            theta_x = ifft2(1j * self.grid.kx * theta_hat_state).real
+            theta_y = ifft2(1j * self.grid.ky * theta_hat_state).real
+            adv = ux * theta_x + uy * theta_y
+            N_hat = -fft2(adv).astype(self.cdtype)
+            N_hat *= self.grid.dealias_mask
+            if Gx != 0.0 or Gy != 0.0:
+                F_hat = fft2(-(ux * Gx + uy * Gy)).astype(self.cdtype)
+                N_hat += F_hat
+            return N_hat
+
+        grad_sq_prev = self._mean_grad_sq(theta_hat)
+
+        integrator = (config.integrator or "etdrk4").lower()
+        if integrator not in {"etdrk4", "rk4", "heun"}:
+            raise ValueError("integrator must be 'etdrk4', 'rk4', or 'heun'")
+
+        if integrator == "etdrk4":
+            E, E2, Q, f1, f2, f3 = self._etdrk4_coeffs(Llin, dt)
+
+        snapshot_dir = None
+        snapshot_count = 0
+        if config.save_to_disk:
+            snapshot_dir = config.save_dir or self._auto_snapshot_dir()
+            os.makedirs(snapshot_dir, exist_ok=True)
+
+        diagnostics.times = np.append(diagnostics.times, 0.0)
+        if config.save_every is not None:
+            theta_snapshot0 = ifft2(theta_hat).real.astype(self.dtype)
+            if config.save_to_disk and snapshot_dir:
+                np.save(os.path.join(snapshot_dir, "theta_00000_t0.0000.npy"), theta_snapshot0)
+            else:
+                diagnostics.snapshots.append(theta_snapshot0)
+
+        frame_step = None
+        if config.output_frames and config.frame_interval is not None:
+            frame_step = max(1, int(round(config.frame_interval / dt)))
+
+        # Current velocity (t_n)
+        uxn, uyn = ux0, uy0
+
+        for n in range(1, nsteps + 1):
+            if integrator == "etdrk4":
+                # t_n
+                Nv = N_with_u(theta_hat, uxn, uyn)
+
+                # t_n + dt/2
+                velocity_process.step(dt / 2.0)
+                uxm, uym = velocity_process.get_velocity()
+                uxm = uxm.astype(self.dtype, copy=False)
+                uym = uym.astype(self.dtype, copy=False)
+
+                a_hat = E2 * theta_hat + Q * Nv
+                Na = N_with_u(a_hat, uxm, uym)
+
+                b_hat = E2 * theta_hat + Q * Na
+                Nb = N_with_u(b_hat, uxm, uym)
+
+                # t_n + dt
+                velocity_process.step(dt / 2.0)
+                uxn1, uyn1 = velocity_process.get_velocity()
+                uxn1 = uxn1.astype(self.dtype, copy=False)
+                uyn1 = uyn1.astype(self.dtype, copy=False)
+
+                c_hat = E2 * a_hat + Q * (2.0 * Nb - Nv)
+                Nc = N_with_u(c_hat, uxn1, uyn1)
+
+                theta_hat = E * theta_hat + f1 * Nv + 2.0 * f2 * (Na + Nb) + f3 * Nc
+
+                # Advance stored velocity to t_{n+1}
+                uxn, uyn = uxn1, uyn1
+
+            elif integrator == "rk4":
+                # t_n
+                k1 = Llin * theta_hat + N_with_u(theta_hat, uxn, uyn)
+
+                # t_n + dt/2
+                velocity_process.step(dt / 2.0)
+                uxm, uym = velocity_process.get_velocity()
+                uxm = uxm.astype(self.dtype, copy=False)
+                uym = uym.astype(self.dtype, copy=False)
+
+                k2_state = theta_hat + 0.5 * dt * k1
+                k2 = Llin * k2_state + N_with_u(k2_state, uxm, uym)
+
+                k3_state = theta_hat + 0.5 * dt * k2
+                k3 = Llin * k3_state + N_with_u(k3_state, uxm, uym)
+
+                # t_n + dt
+                velocity_process.step(dt / 2.0)
+                uxn1, uyn1 = velocity_process.get_velocity()
+                uxn1 = uxn1.astype(self.dtype, copy=False)
+                uyn1 = uyn1.astype(self.dtype, copy=False)
+
+                k4_state = theta_hat + dt * k3
+                k4 = Llin * k4_state + N_with_u(k4_state, uxn1, uyn1)
+
+                theta_hat = theta_hat + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+                uxn, uyn = uxn1, uyn1
+
+            else:  # Heun / RK2
+                # t_n
+                k1 = Llin * theta_hat + N_with_u(theta_hat, uxn, uyn)
+
+                # t_n + dt
+                velocity_process.step(dt)
+                uxn1, uyn1 = velocity_process.get_velocity()
+                uxn1 = uxn1.astype(self.dtype, copy=False)
+                uyn1 = uyn1.astype(self.dtype, copy=False)
+
+                k2_state = theta_hat + dt * k1
+                k2 = Llin * k2_state + N_with_u(k2_state, uxn1, uyn1)
+
+                theta_hat = theta_hat + 0.5 * dt * (k1 + k2)
+
+                uxn, uyn = uxn1, uyn1
+
+            tnow = n * dt
+
+            if config.save_every is not None and (n % config.save_every == 0 or n == nsteps):
+                theta_snapshot = ifft2(theta_hat).real.astype(self.dtype)
+                if config.save_to_disk and snapshot_dir:
+                    filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{tnow:.4f}.npy")
+                    np.save(filename, theta_snapshot)
+                    if snapshot_count == 0:
+                        metadata = {
+                            "N": self.grid.N,
+                            "L": self.grid.L,
+                            "dt": dt,
+                            "kappa": kappa,
+                            "peclet": config.peclet,
+                            "mean_grad": config.mean_grad,
+                            "t_end": config.t_end,
+                            "save_every": config.save_every,
+                            "velocity": "time_varying_ou_wavelet",
+                        }
+                        np.save(os.path.join(snapshot_dir, "metadata.npy"), metadata)
+                    snapshot_count += 1
+                else:
+                    diagnostics.snapshots.append(theta_snapshot)
+                diagnostics.times = np.append(diagnostics.times, tnow)
+
+            if frame_step is not None and (n % frame_step == 0 or n == nsteps):
+                diagnostics.frames.append(ifft2(theta_hat).real.astype(self.dtype))
+
+            if verbose and n % max(1, nsteps // 10) == 0:
+                print(f"  Step {n}/{nsteps} (t={tnow:.3f}/{t_end:.3f})")
+
+            grad_sq_curr = self._mean_grad_sq(theta_hat)
+            diagnostics.grad_sq_integral += 0.5 * (grad_sq_prev + grad_sq_curr) * dt
+            grad_sq_prev = grad_sq_curr
+
+        theta_final = ifft2(theta_hat).real.astype(self.dtype)
+
+        if verbose:
+            print(f"Simulation complete. Final time: {t_end:.3f}")
+            if snapshot_dir and snapshot_count > 0:
+                print(f"  Saved {snapshot_count} snapshots to: {snapshot_dir}/")
+
+        return theta_final, diagnostics
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
     def _resolve_time_controls(

@@ -94,6 +94,7 @@ api = ScalarAdvectionAPI(
 - `generate_velocity(VelocityConfig)` → `(ux, uy)`
 - `circle_initial_condition(...)`, `random_initial_condition(...)`
 - `evolve_scalar(theta0, ux, uy, ScalarConfig)` → `(theta_final, diagnostics)`
+- `evolve_scalar_time_varying(theta0, velocity_process, ScalarConfig)` → `(theta_final, diagnostics)`
 - `scalar_spectrum(theta, subtract_mean=..., subtract_mean_gradient=...)`
 - `velocity_spectrum(ux, uy)`
 - `scalar_structure_functions(theta, orders=...)`
@@ -118,6 +119,27 @@ ScalarConfig(
     save_every=None, output_frames=False,
     integrator='etdrk4',  # 'rk4', 'heun'
 )
+
+WaveletOUConfig(
+    N=256, lam_min=4, lam_max=64, slope=-5/3,
+    wavelet='mexh', amp=1.0, tau=0.1, seed=1,
+)
+
+```
+
+### 5.3 Time‑varying OU wavelet velocity
+
+```python
+from scalar_advection.api import (
+    ScalarAdvectionAPI, ScalarConfig,
+    WaveletOUConfig, WaveletOUTemporalVelocity,
+)
+
+api = ScalarAdvectionAPI(N=256, L=1.0, dtype=np.float32)
+vel = WaveletOUTemporalVelocity(WaveletOUConfig(N=256, lam_min=4, lam_max=256, tau=0.2, amp=1.0))
+
+theta0 = api.circle_initial_condition(radius=0.25)
+theta_f, diag = api.evolve_scalar_time_varying(theta0, vel, ScalarConfig(peclet=1e4, t_end=0.25))
 ```
 
 ### 5.3 Diagnostics & plotting

@@ -36,6 +36,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
+import cmasher as cmr
+
 from scalar_advection import ScalarAdvectionAPI, ScalarConfig, generate_divfree_field  # noqa: E402
 
 from run_wavelet_scalar_experiment import (  # noqa: E402
@@ -182,6 +185,18 @@ def maybe_reuse_velocity(args: argparse.Namespace, out_dir: Path) -> Optional[Tu
     return None
 
 
+def save_scalar_map(theta: np.ndarray, path: Path) -> None:
+    vmax = np.percentile(np.abs(theta), 99.0)
+    fig, ax = plt.subplots(figsize=(6.2, 6.2), dpi=220, constrained_layout=True)
+    im = ax.imshow(theta, origin="lower", cmap=cmr.iceburn, vmin=-vmax, vmax=vmax)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=r"$\theta$")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+
 def run_single_simulation(args: argparse.Namespace) -> Tuple[ScalarRunResult, Path]:
     out_dir = build_output_dir(args)
     ensure_dir(out_dir)
@@ -325,6 +340,7 @@ def run_scalar_case_single(
     if summary_path.exists():
         data = json.loads(summary_path.read_text())
         theta_final = np.load(pe_dir / "theta_final.npy")
+        save_scalar_map(theta_final, pe_dir / "theta_final.png")
         scalar_structure_function_plot(
             api,
             theta_final,
@@ -388,6 +404,7 @@ def run_scalar_case_single(
     theta_final, diagnostics = api.evolve_scalar(theta0, ux, uy, scalar_cfg, verbose=run_cfg.verbose)
 
     np.save(pe_dir / "theta_final.npy", theta_final)
+    save_scalar_map(theta_final, pe_dir / "theta_final.png")
 
     scalar_structure_function_plot(
         api,

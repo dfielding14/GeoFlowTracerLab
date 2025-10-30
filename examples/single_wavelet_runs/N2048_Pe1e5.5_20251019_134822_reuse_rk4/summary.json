@@ -1,0 +1,32 @@
+{
+  "scalar_run": {
+    "dt": 2.4478605698619405e-05,
+    "edot": 0.0003588740703899935,
+    "grad_sq_integral": 49.52609220096203,
+    "kappa": 7.246161658258643e-06,
+    "n_steps": 10213,
+    "peclet": 316000.0,
+    "structure_functions_path": "examples/single_wavelet_runs/N2048_Pe1e5.5_20251019_134822_reuse/scalar_pe_1e5.5/scalar_structure_functions.npz",
+    "theta_final_npy": "examples/single_wavelet_runs/N2048_Pe1e5.5_20251019_134822_reuse/scalar_pe_1e5.5/theta_final.npy",
+    "theta_final_npz": "examples/single_wavelet_runs/N2048_Pe1e5.5_20251019_134822_reuse/scalar_pe_1e5.5/theta_final.npz",
+    "yaglom_path": "examples/single_wavelet_runs/N2048_Pe1e5.5_20251019_134822_reuse/scalar_pe_1e5.5/yaglom_stats.npz",
+    "yaglom_unit_slope_range": [
+      104.5,
+      529.0
+    ]
+  },
+  "velocity_summary": {
+    "n_displacements": 4096,
+    "n_ell_bins": 40,
+    "orders": [
+      1,
+      2,
+      3,
+      4,
+      6,
+      8,
+      10
+    ],
+    "urms": 2.2897870540618896
+  }
+}
