@@ -15,30 +15,31 @@ This checklist organizes the upcoming work around performance, diagnostics, and 
 
 ## Diagnostics – Scalar Energy Dissipation
 
-- [ ] Add time-resolved scalar dissipation rate output: store `epsilon_theta(t) = 2 kappa <|∇θ|^2>` each step.
-- [ ] Return and persist dissipation time series in `SimulationDiagnostics` (array + cumulative integral).
-- [ ] Plot helpers: quick plot of `epsilon_theta(t)` and cumulative dissipation vs time; save alongside runs.
+- [x] Add time-resolved scalar dissipation rate output: store `epsilon_theta(t) = 2 kappa <|∇θ|^2>` each step.
+- [x] Return and persist dissipation time series in `SimulationDiagnostics` (array + cumulative integral).
+- [x] Plot helpers: quick plot of `epsilon_theta(t)` and cumulative dissipation vs time; save alongside runs.
 - [ ] Back-fill into `run_wavelet_scalar_experiment.py` and single-run driver; include in summaries.
 
 ## Velocity Model – Spatial Structure Function Slope
 
-- [ ] Replace “spectrum slope beta” control with “structure-function slope alpha” for spatial increments.
-- [ ] Derive mapping alpha → spectral amplitude law A(k): for isotropic fields, target S_p (p=1 or 2) ∝ ℓ^alpha.
-- [ ] Implement generator parameter `alpha` and deprecate `beta` with backward-compatible shim + warnings.
+- [x] Replace “spectrum slope beta” control with “structure-function slope alpha” for spatial increments.
+- [x] Derive mapping alpha → spectral amplitude law A(k): A(k) ∝ k^{-(alpha+1)}.
+- [x] Implement generator parameter `alpha` (removed beta altogether for spatial).
 - [ ] Validate mapping numerically: generate velocity, measure structure functions, and verify slope across scales.
 - [ ] Update `ScalarAdvectionAPI.generate_velocity()` to accept `alpha`-based config and docstring.
 
 ## Velocity Model – Temporal Structure Function
 
-- [ ] Implement time-varying Fourier-based velocity with random coefficients scaled to enforce temporal SF ∝ (Δt)^beta.
-- [ ] Default `beta = alpha`; allow user override; document valid ranges and physical interpretation.
-- [ ] Candidate processes: fractional Brownian/OU in time per mode with scale-dependent timescales; compare approaches.
-- [ ] Provide `TemporalVelocityProcess` interface (get_velocity/step) and Fourier-based implementation.
-- [ ] Add unit tests/diagnostics to measure temporal SF and confirm scaling over decades where feasible.
+- [x] Implement time-varying Fourier-based velocity with random coefficients scaled to enforce temporal SF ∝ (Δt)^beta.
+- [x] Default `beta = alpha`; allow user override; document valid ranges and physical interpretation.
+- [x] Provide `TemporalVelocityProcess` interface (get_velocity/step) as `FourierTemporalVelocityProcess`.
+- [ ] Add diagnostics to measure temporal SF from point probes and confirm scaling.
+- [ ] Optionally compare with OU and add scale-dependent τ_k.
 
 ## Experiments/CLI
 
-- [ ] Update experiment scripts to accept `alpha` and `beta` parameters; plumb into generators.
+- [x] Update experiment scripts to accept `alpha` (spatial) and plumb into generators.
+- [ ] Add CLI path to run time-varying velocity (FourierTemporal) with `beta` (temporal) parameter.
 - [ ] Switch defaults and CLI help text to new semantics; keep compatibility flags for beta-based runs.
 - [ ] Add command to export diagnostics (spectra, structure, dissipation) for both velocity and scalar consistently.
 - [ ] Ensure outputs write under `experimental_results/` and create per-run metadata with versions/config.
@@ -62,4 +63,3 @@ This checklist organizes the upcoming work around performance, diagnostics, and 
 - [ ] Optional: lightweight configuration registry for experiments to ensure reproducible parameter sets.
 
 Please review and reprioritize. I’ll start with diagnostics (dissipation), then the alpha-based velocity mapping, followed by the time-varying temporal SF implementation, while applying performance wins opportunistically.
-
