@@ -8,6 +8,7 @@ previously bundled inside ``turbulent_scalar_sim``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 from typing import Optional, Tuple
 
 import numpy as np
@@ -22,6 +23,11 @@ class VelocityConfig:
     Configuration for synthetic turbulent velocity field generation.
     """
 
+    # Prefer specifying the spatial structure-function slope `alpha`, where
+    # E[|v(x) - v(x+ℓ)|] ∝ ℓ^alpha. For backward compatibility, `beta` denotes
+    # the energy spectrum exponent E(k) ∝ k^{-beta}. The mapping is
+    #   beta = 2*alpha + 1  (for 1 < beta < 3, typical inertial-range values).
+    alpha: Optional[float] = None
     beta: float = 5.0 / 3.0
     urms: float = 1.0
     seed: Optional[int] = None
@@ -79,7 +85,17 @@ class VelocityFieldGenerator:
         upx = kx * kdotu2 / denom
         upy = ky * kdotu2 / denom
 
-        amp = self._spectral_amplitude(config.beta, dtype)
+        # Determine spectral exponent beta from alpha if provided
+        eff_beta = config.beta
+        if config.alpha is not None:
+            eff_beta = float(2.0 * config.alpha + 1.0)
+            # Warn if both are set and differ significantly
+            if abs(eff_beta - config.beta) > 1e-12:
+                warnings.warn(
+                    "VelocityConfig: using alpha to derive beta=2*alpha+1; provided beta is ignored.",
+                    RuntimeWarning,
+                )
+        amp = self._spectral_amplitude(eff_beta, dtype)
         window = self._compute_band_window(config.kmin, config.kmax, config.taper_width, dtype)
 
         usx *= amp * window
@@ -196,6 +212,8 @@ def generate_divfree_field(
     lam_min: float = 8,
     lam_max: float = 64,
     slope: float = -5.0 / 3.0,
+    *,
+    alpha: Optional[float] = None,
     wavelet: str = "mexh",
     lam_ref: Optional[float] = None,
     amp: float = 1.0,
@@ -218,6 +236,11 @@ def generate_divfree_field(
     n_scales = max(1, int(np.ceil(np.log2(lam_max / lam_min))) + 1)
     lams = lam_min * 2.0 ** np.linspace(0, np.log2(lam_max / lam_min), n_scales)
     Psi_k = np.zeros((N, N), dtype=np.complex128)
+
+    # If `alpha` is provided, map to an equivalent spectral slope used here
+    # where negative `slope` corresponds to E(k) ∝ k^{slope}.
+    if alpha is not None:
+        slope = -(2.0 * float(alpha) + 1.0)
 
     for lam in lams:
         if wavelet.lower().startswith("mex"):

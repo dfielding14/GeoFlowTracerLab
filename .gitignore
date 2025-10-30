@@ -27,3 +27,8 @@ Thumbs.db
 
 # Logs / cache
 *.log
+
+# Experiment outputs
+experimental_results/
+snapshots/
+output.png

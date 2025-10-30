@@ -54,6 +54,10 @@ class SimulationDiagnostics:
     n_steps: int = 0
     frames: Optional[List[np.ndarray]] = None
     grad_sq_integral: float = 0.0
+    # Full time series diagnostics
+    times_ts: np.ndarray = field(default_factory=lambda: np.array([]))
+    grad_sq_ts: np.ndarray = field(default_factory=lambda: np.array([]))
+    dissipation_ts: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
 class ScalarAdvectionDiffusionSolver:
@@ -148,6 +152,10 @@ class ScalarAdvectionDiffusionSolver:
             F_hat = None
 
         grad_sq_prev = self._mean_grad_sq(theta_hat)
+        # Initialize time-series at t=0
+        ts_times: List[float] = [0.0]
+        ts_grad_sq: List[float] = [float(grad_sq_prev)]
+        ts_eps: List[float] = [float(2.0 * kappa * grad_sq_prev)]
 
         integrator = (config.integrator or "etdrk4").lower()
         if integrator not in {"etdrk4", "rk4", "heun"}:
@@ -232,8 +240,17 @@ class ScalarAdvectionDiffusionSolver:
             grad_sq_curr = self._mean_grad_sq(theta_hat)
             diagnostics.grad_sq_integral += 0.5 * (grad_sq_prev + grad_sq_curr) * dt
             grad_sq_prev = grad_sq_curr
+            # Append time-resolved diagnostics
+            ts_times.append(float(tnow))
+            ts_grad_sq.append(float(grad_sq_curr))
+            ts_eps.append(float(2.0 * kappa * grad_sq_curr))
 
         theta_final = ifft2(theta_hat).real.astype(self.dtype)
+
+        # Finalize time series arrays
+        diagnostics.times_ts = np.asarray(ts_times, dtype=self.dtype)
+        diagnostics.grad_sq_ts = np.asarray(ts_grad_sq, dtype=self.dtype)
+        diagnostics.dissipation_ts = np.asarray(ts_eps, dtype=self.dtype)
 
         if verbose:
             print(f"Simulation complete. Final time: {t_end:.3f}")
