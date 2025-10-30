@@ -111,10 +111,12 @@ class ScalarAdvectionDiffusionSolver:
     # Diagnostics helpers
     # ------------------------------------------------------------------
     def compute_scalar_dissipation(self, theta: np.ndarray, kappa: float) -> float:
+        # Accumulate in float64 to avoid overflow in square/add
         theta_hat = fft2(theta)
-        theta_x = ifft2(1j * self.grid.kx * theta_hat).real
-        theta_y = ifft2(1j * self.grid.ky * theta_hat).real
-        return 2.0 * kappa * float(np.mean(theta_x**2 + theta_y**2))
+        theta_x = ifft2(1j * self.grid.kx * theta_hat).real.astype(np.float64, copy=False)
+        theta_y = ifft2(1j * self.grid.ky * theta_hat).real.astype(np.float64, copy=False)
+        val = np.mean(theta_x * theta_x + theta_y * theta_y, dtype=np.float64)
+        return 2.0 * float(kappa) * float(val)
 
     @staticmethod
     def load_snapshots(snapshot_dir: str) -> Tuple[List[np.ndarray], np.ndarray, Dict]:
@@ -554,9 +556,10 @@ class ScalarAdvectionDiffusionSolver:
         return os.path.join("snapshots", f"run_{timestamp}_fft{FFT_BACKEND.lower()}")
 
     def _mean_grad_sq(self, theta_hat: np.ndarray) -> float:
-        theta_x = ifft2(1j * self.grid.kx * theta_hat).real
-        theta_y = ifft2(1j * self.grid.ky * theta_hat).real
-        return float(np.mean(theta_x**2 + theta_y**2))
+        # Accumulate in float64 to reduce overflow risk
+        theta_x = ifft2(1j * self.grid.kx * theta_hat).real.astype(np.float64, copy=False)
+        theta_y = ifft2(1j * self.grid.ky * theta_hat).real.astype(np.float64, copy=False)
+        return float(np.mean(theta_x * theta_x + theta_y * theta_y, dtype=np.float64))
 
 
 __all__ = ["ScalarConfig", "SimulationDiagnostics", "ScalarAdvectionDiffusionSolver"]

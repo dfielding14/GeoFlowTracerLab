@@ -108,8 +108,11 @@ def radial_profile_from_map(arr2d: Array, ell_edges: Array) -> Tuple[Array, Arra
 
 
 def s2_fft_scalar(field: Array, ell_edges: Array) -> Tuple[Array, Array]:
-    F = np.fft.fft2(field)
-    corr = np.fft.ifft2(np.abs(F) ** 2).real
+    # Use float64 FFT to avoid overflow in power and improve numerical stability
+    F = np.fft.fft2(field.astype(np.float64, copy=False))
+    power = np.abs(F)
+    power *= power
+    corr = np.fft.ifft2(power).real
     corr = np.fft.fftshift(corr) / field.size
     mu2 = np.mean(field**2)
     S2_map = 2.0 * (mu2 - corr)
@@ -117,9 +120,13 @@ def s2_fft_scalar(field: Array, ell_edges: Array) -> Tuple[Array, Array]:
 
 
 def s2_fft_vector(ux: Array, uy: Array, ell_edges: Array) -> Tuple[Array, Array]:
-    Fx = np.fft.fft2(ux)
-    Fy = np.fft.fft2(uy)
-    corr = np.fft.ifft2(np.abs(Fx) ** 2 + np.abs(Fy) ** 2).real
+    Fx = np.fft.fft2(ux.astype(np.float64, copy=False))
+    Fy = np.fft.fft2(uy.astype(np.float64, copy=False))
+    px = np.abs(Fx)
+    px *= px
+    py = np.abs(Fy)
+    py *= py
+    corr = np.fft.ifft2(px + py).real
     corr = np.fft.fftshift(corr) / ux.size
     mu2 = np.mean(ux**2 + uy**2)
     S2_map = 2.0 * (mu2 - corr)

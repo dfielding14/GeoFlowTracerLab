@@ -107,7 +107,7 @@ def save_theta_frames_and_movie(frames_dir: Path, times: np.ndarray, snapshots: 
     for idx, tnow in enumerate(times):
         if idx >= len(snapshots):
             break
-        arr = snapshots[idx] + bg
+        arr = np.nan_to_num(snapshots[idx] + bg, copy=False)
         fig, ax = plt.subplots(figsize=(5.0,5.0), dpi=140, constrained_layout=True)
         cs = ax.contour(arr, levels=levels, cmap="RdBu_r")
         ax.clabel(cs, fmt="%0.1f", fontsize=8)
@@ -256,4 +256,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

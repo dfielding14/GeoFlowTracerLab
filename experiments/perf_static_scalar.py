@@ -201,7 +201,7 @@ def main() -> int:
         if idx >= len(diag.snapshots):
             break
         th = diag.snapshots[idx]
-        arr = th + bg
+        arr = np.nan_to_num(th + bg, copy=False)
         fig, ax = plt.subplots(figsize=(6.0,6.0), dpi=160, constrained_layout=True)
         cs = ax.contour(arr, levels=levels, cmap="RdBu_r")
         ax.clabel(cs, fmt="%0.1f", fontsize=8)
