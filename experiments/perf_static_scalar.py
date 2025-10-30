@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scalar_advection import ScalarAdvectionAPI, ScalarConfig, VelocityConfig  # noqa: E402
+from scalar_advection.velocity import generate_divfree_field  # noqa: E402
 
 
 @dataclass
@@ -70,6 +71,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fft-threads", type=int, default=8, help="FFTW threads (default: 8)")
     p.add_argument("--velocity-seed", type=int, default=42, help="Velocity RNG seed")
     p.add_argument("--output-root", type=Path, default=Path("experimental_results")/"perf_runs")
+    # Spectral band limits (for non-wavelet path): k in [kmin, kmax]
+    p.add_argument("--kmin", type=float, help="Lower spectral band (grid units), for spectral generator")
+    p.add_argument("--kmax", type=float, help="Upper spectral band (grid units), for spectral generator")
+    # Wavelet options (if provided, overrides spectral generator)
+    p.add_argument("--lam-min", type=float, help="Minimum wavelet scale (grid cells)")
+    p.add_argument("--lam-max", type=float, help="Maximum wavelet scale (grid cells)")
+    p.add_argument("--wavelet", choices=("mexh","haar"), default="mexh", help="Wavelet type for velocity")
     return p.parse_args()
 
 
@@ -99,9 +107,30 @@ def main() -> int:
     api = ScalarAdvectionAPI(N=cfg.N, L=cfg.L, dtype=cfg.dtype, warm_cache=True)
     api.set_fft_threads(cfg.fft_threads)
 
-    # Generate static velocity field (alpha-based)
-    vel_cfg = VelocityConfig(alpha=cfg.alpha, urms=1.0, seed=cfg.velocity_seed)
-    ux, uy = api.generate_velocity(vel_cfg)
+    # Generate static velocity field
+    if args.lam_min is not None or args.lam_max is not None:
+        # Wavelet-based generator with explicit scale truncation
+        lam_min = float(args.lam_min) if args.lam_min is not None else 3.0
+        lam_max = float(args.lam_max) if args.lam_max is not None else float(cfg.N)
+        ux, uy, _ = generate_divfree_field(
+            N=cfg.N,
+            lam_min=lam_min,
+            lam_max=lam_max,
+            alpha=cfg.alpha,
+            wavelet=args.wavelet,
+            sparsity=0.0,
+            seed=cfg.velocity_seed,
+        )
+        ux = ux.astype(api.grid.dtype, copy=False)
+        uy = uy.astype(api.grid.dtype, copy=False)
+        vel_meta = {"method": "wavelet", "lam_min": lam_min, "lam_max": lam_max, "wavelet": args.wavelet}
+    else:
+        # Alpha-based spectral generator with optional band window [kmin,kmax]
+        vel_cfg = VelocityConfig(alpha=cfg.alpha, urms=1.0, seed=cfg.velocity_seed,
+                                 kmin=(float(args.kmin) if args.kmin is not None else None),
+                                 kmax=(float(args.kmax) if args.kmax is not None else None))
+        ux, uy = api.generate_velocity(vel_cfg)
+        vel_meta = {"method": "spectral", "kmin": args.kmin, "kmax": args.kmax}
 
     # Scalar evolution from mean-gradient forcing only (zero initial perturbation)
     theta0 = np.zeros((cfg.N, cfg.N), dtype=api.grid.dtype)
@@ -187,6 +216,26 @@ def main() -> int:
         fig.savefig(frames_dir / f"theta_t{tnow:.4f}.png", bbox_inches="tight")
         plt.close(fig)
 
+    # Plot velocity components (vx, vy, |u|)
+    figv, axes = plt.subplots(1, 3, figsize=(12.0, 4.2), dpi=160, constrained_layout=True)
+    vx_vmax = float(np.percentile(np.abs(ux), 99.0))
+    vy_vmax = float(np.percentile(np.abs(uy), 99.0))
+    spd = np.hypot(ux, uy)
+    spd_vmax = float(np.percentile(spd, 99.0))
+    im0 = axes[0].imshow(ux, origin="lower", cmap="RdBu_r", vmin=-vx_vmax, vmax=vx_vmax)
+    axes[0].set_title(r"$u_x$")
+    im1 = axes[1].imshow(uy, origin="lower", cmap="RdBu_r", vmin=-vy_vmax, vmax=vy_vmax)
+    axes[1].set_title(r"$u_y$")
+    im2 = axes[2].imshow(spd, origin="lower", cmap="viridis", vmin=0.0, vmax=spd_vmax)
+    axes[2].set_title(r"$|\mathbf{u}|$")
+    for ax in axes:
+        ax.set_xticks([]); ax.set_yticks([])
+    cbar0 = figv.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+    cbar1 = figv.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+    cbar2 = figv.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+    figv.savefig(out_dir / "velocity_panels.png", bbox_inches="tight")
+    plt.close(figv)
+
     # Persist data and summary
     np.savez_compressed(out_dir / "dissipation_series.npz", t=t_ts, epsilon=eps_ts, t_even=t_even, epsilon_even=eps_even)
     summary = {
@@ -205,6 +254,7 @@ def main() -> int:
         "profile": getattr(diag, "profile", {}),
         "outputs": cfg.outputs,
         "mean_grad": cfg.mean_grad,
+        "velocity": vel_meta,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 
