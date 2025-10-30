@@ -2,7 +2,7 @@
 """
 Edot_theta vs mu scaling test at late times.
 
-For alpha in {1/6, 1/3, 1/2, 2/3} and Peclet in {2048, 4096, 8192, 16384},
+For alpha in {1/3, 1/2, 2/3} and Peclet in {2048, 4096, 8192, 16384},
 run scalar advection on a 1024^2 grid with wavelet velocity (mexh) truncated
 to lam_min=8, lam_max=512 (velocity_seed=1). Compute:
 
@@ -175,7 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     api = ScalarAdvectionAPI(N=cfg.N, L=cfg.L, dtype=cfg.dtype, warm_cache=True)
     api.set_fft_threads(cfg.fft_threads)
 
-    alphas = [1.0/6.0, 1.0/3.0, 1.0/2.0, 2.0/3.0]
+    alphas = [1.0/3.0, 1.0/2.0, 2.0/3.0]
     peclets = [2048.0, 4096.0, 8192.0, 16384.0]
 
     # Storage for aggregate plot

@@ -3,7 +3,7 @@
 Fast test version of Edot_theta vs mu scaling.
 
 Reduces resolution to 128^2 and scales Peclet accordingly:
-  Pe ∈ {128, 256, 512, 1024} for alphas {1/6, 1/3, 1/2, 2/3}.
+  Pe ∈ {128, 256, 512, 1024} for alphas {1/3, 1/2, 2/3}.
 
 Velocity: wavelet (mexh) with lam_min=8, lam_max=64, velocity_seed=1.
 Defaults are set for speed (t_end=1.0). Aggregation logic matches the full
@@ -163,7 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     api = ScalarAdvectionAPI(N=cfg.N, L=cfg.L, dtype=cfg.dtype, warm_cache=True)
     api.set_fft_threads(cfg.fft_threads)
 
-    alphas = [1.0/6.0, 1.0/3.0, 1.0/2.0, 2.0/3.0]
+    alphas = [1.0/3.0, 1.0/2.0, 2.0/3.0]
     peclets = [128.0, 256.0, 512.0, 1024.0]
 
     results: Dict[float, Dict[str, np.ndarray]] = {}
