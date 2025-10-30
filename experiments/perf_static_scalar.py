@@ -20,6 +20,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import subprocess
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -193,14 +194,8 @@ def main() -> int:
     X, Y = np.meshgrid(x, y, indexing="xy")
     Gx, Gy = cfg.mean_grad
     bg = Gx*X + Gy*Y
-    # Determine consistent color scale across frames
-    if diag.snapshots:
-        vals = []
-        for th in diag.snapshots:
-            vals.append(np.abs(th + bg))
-        vmax = float(np.percentile(np.stack(vals), 99.0))
-    else:
-        vmax = float(np.percentile(np.abs(theta_final + bg), 99.0))
+    # Contour levels for theta plots
+    levels = [-0.4, -0.2, 0.0, 0.2, 0.4]
     # Save images
     for idx, tnow in enumerate(diag.times):
         if idx >= len(diag.snapshots):
@@ -208,13 +203,35 @@ def main() -> int:
         th = diag.snapshots[idx]
         arr = th + bg
         fig, ax = plt.subplots(figsize=(6.0,6.0), dpi=160, constrained_layout=True)
-        im = ax.imshow(arr, origin="lower", cmap="RdBu_r", vmin=-vmax, vmax=vmax)
+        cs = ax.contour(arr, levels=levels, cmap="RdBu_r")
+        ax.clabel(cs, fmt="%0.1f", fontsize=8)
         ax.set_xticks([]); ax.set_yticks([])
-        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label(r"$\theta$ (with mean gradient)")
-        fig.suptitle(f"t = {tnow:.3f}")
+        ax.set_title(f"t = {tnow:.3f}")
         fig.savefig(frames_dir / f"theta_t{tnow:.4f}.png", bbox_inches="tight")
         plt.close(fig)
+
+    # Stitch frames into a movie via ffmpeg (if available)
+    try:
+        movie_name = f"long_time_evolution_Peclet{int(cfg.peclet)}.mp4"
+        movie_path = out_dir / movie_name
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-framerate", "20",
+            "-pattern_type", "glob",
+            "-i", "*.png",
+            "-s", "746x866",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "17",
+            str(movie_path),
+        ]
+        subprocess.run(cmd, cwd=str(frames_dir), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        # ffmpeg not installed; skip movie creation
+        movie_path = None
+    except subprocess.CalledProcessError:
+        movie_path = None
 
     # Plot velocity components (vx, vy, |u|)
     figv, axes = plt.subplots(1, 3, figsize=(12.0, 4.2), dpi=160, constrained_layout=True)
@@ -255,6 +272,7 @@ def main() -> int:
         "outputs": cfg.outputs,
         "mean_grad": cfg.mean_grad,
         "velocity": vel_meta,
+        "movie": (str(movie_path) if movie_path else None),
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 
