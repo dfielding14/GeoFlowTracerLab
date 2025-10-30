@@ -31,6 +31,15 @@ from .fft import set_fftw_threads, warm_fft_cache as _warm_fft_cache
 class ScalarAdvectionAPI:
     """
     Facade that bundles velocity generation, scalar evolution, and diagnostics.
+
+    Notes
+    -----
+    - Velocity generation uses an alpha-based spatial parameterization. Set
+      ``VelocityConfig(alpha)`` so that the first-order velocity increment
+      structure function obeys approximately
+      E[|v(x) - v(x+ℓ)|] ∝ ℓ^alpha over an inertial range of scales.
+    - Time-varying velocity processes are provided separately and can be
+      passed to the solver's time-dependent evolution method when needed.
     """
 
     def __init__(self, N: int = 256, L: float = 1.0, dtype=np.float64, warm_cache: bool = False):
@@ -44,6 +53,21 @@ class ScalarAdvectionAPI:
     # Velocity generation
     # ------------------------------------------------------------------
     def generate_velocity(self, config: VelocityConfig | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate a synthetic velocity field using the alpha-based model.
+
+        Parameters
+        ----------
+        config : VelocityConfig, optional
+            Configuration with ``alpha`` specifying the spatial structure
+            function slope (E[|δu|] ∝ ℓ^alpha). Other fields such as ``urms``,
+            band limits (``kmin``, ``kmax``), and RNG seed can also be set.
+
+        Returns
+        -------
+        ux, uy : ndarray
+            2D velocity components on the API grid, dtype-matched to the grid.
+        """
         config = config or VelocityConfig()
         ux, uy = self.velocity_generator.generate(config)
         if ux.dtype != self.grid.dtype:

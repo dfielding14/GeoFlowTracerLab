@@ -26,8 +26,8 @@ This checklist organizes the upcoming work around performance, diagnostics, and 
 - [x] Replace “spectrum slope beta” control with “structure-function slope alpha” for spatial increments.
 - [x] Derive mapping alpha → spectral amplitude law A(k): A(k) ∝ k^{-(alpha+1)}.
 - [x] Implement generator parameter `alpha` (removed beta altogether for spatial).
-- [ ] Validate mapping numerically: generate velocity, measure structure functions, and verify slope across scales.
-- [ ] Update `ScalarAdvectionAPI.generate_velocity()` to accept `alpha`-based config and docstring.
+- [x] Validate mapping numerically: generate velocity, measure structure functions, and verify slope across scales.
+- [x] Update `ScalarAdvectionAPI.generate_velocity()` to accept `alpha`-based config and docstring.
 
 ## Velocity Model – Temporal Structure Function
 
