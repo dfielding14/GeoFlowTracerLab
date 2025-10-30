@@ -3,7 +3,7 @@
 Fast test version of Edot_theta vs mu scaling.
 
 Reduces resolution to 128^2 and scales Peclet accordingly:
-  Pe ∈ {256, 512, 1024, 2048} for alphas {1/6, 1/3, 1/2, 2/3}.
+  Pe ∈ {128, 256, 512, 1024} for alphas {1/6, 1/3, 1/2, 2/3}.
 
 Velocity: wavelet (mexh) with lam_min=8, lam_max=64, velocity_seed=1.
 Defaults are set for speed (t_end=1.0). Aggregation logic matches the full
@@ -24,6 +24,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import cmasher as cmr
 import numpy as np
 
 import sys
@@ -101,30 +102,20 @@ def build_velocity(N: int, alpha: float, lam_min: float, lam_max: float, wavelet
     return ux.astype(dtype, copy=False), uy.astype(dtype, copy=False)
 
 
-def save_theta_frames_and_movie(frames_dir: Path, times: np.ndarray, snapshots: List[np.ndarray], bg: np.ndarray, peclet: float) -> str | None:
+def save_theta_frames(frames_dir: Path, times: np.ndarray, snapshots: List[np.ndarray], bg: np.ndarray) -> None:
     ensure_dir(frames_dir)
-    levels = [-0.4, -0.2, 0.0, 0.2, 0.4]
+    levels = [-0.3, -0.15, 0.0, 0.15, 0.3]
     for idx, tnow in enumerate(times):
         if idx >= len(snapshots):
             break
         arr = np.nan_to_num(snapshots[idx] + bg, copy=False)
         fig, ax = plt.subplots(figsize=(5.0,5.0), dpi=140, constrained_layout=True)
-        cs = ax.contour(arr, levels=levels, cmap="RdBu_r")
+        cs = ax.contour(arr, levels=levels, cmap=cmr.iceburn)
         ax.clabel(cs, fmt="%0.1f", fontsize=8)
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_title(f"t = {tnow:.3f}")
         fig.savefig(frames_dir / f"theta_t{tnow:.4f}.png", bbox_inches="tight")
         plt.close(fig)
-    try:
-        movie = frames_dir.parent / f"evolution_Pe{int(peclet)}.mp4"
-        cmd = [
-            "ffmpeg", "-y", "-framerate", "20", "-pattern_type", "glob", "-i", "*.png",
-            "-s", "512x576", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", str(movie),
-        ]
-        subprocess.run(cmd, cwd=str(frames_dir), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return str(movie)
-    except Exception:
-        return None
 
 
 def sliding_log_slope_series(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -148,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     api.set_fft_threads(cfg.fft_threads)
 
     alphas = [1.0/6.0, 1.0/3.0, 1.0/2.0, 2.0/3.0]
-    peclets = [256.0, 512.0, 1024.0, 2048.0]
+    peclets = [128.0, 256.0, 512.0, 1024.0]
 
     results: Dict[float, Dict[str, np.ndarray]] = {}
 
@@ -185,12 +176,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             sf = structure_functions(theta_final, orders=(1,2), n_ell_bins=cfg.n_ell_bins, n_disp_total=cfg.n_disp_total, seed=0, use_fft_for_p2=True)
             np.savez_compressed(pe_dir / "theta_structure_functions.npz", **sf)
+            # Plot structure functions
+            r = sf["r"]; orders = sf["orders"]; S = sf["S"]
+            fig_sf, ax_sf = plt.subplots(figsize=(5.4, 4.2), dpi=150)
+            for j, p in enumerate(orders):
+                ax_sf.loglog(r, S[j], 'o-', ms=3, label=f"p={p:g}")
+            ax_sf.set_xlabel(r"$\ell/\Delta x$"); ax_sf.set_ylabel(r"$S_p(\ell)$")
+            ax_sf.grid(True, which='both', ls=':', lw=0.6); ax_sf.legend(frameon=False)
+            fig_sf.tight_layout(); fig_sf.savefig(pe_dir / "theta_structure_functions.png", bbox_inches='tight'); plt.close(fig_sf)
 
             x = np.linspace(-cfg.L/2, cfg.L/2, cfg.N, endpoint=False)
             y = np.linspace(-cfg.L/2, cfg.L/2, cfg.N, endpoint=False)
             X, Y = np.meshgrid(x, y, indexing="xy")
             bg = cfg.mean_grad[0]*X + cfg.mean_grad[1]*Y
-            _ = save_theta_frames_and_movie(pe_dir / "theta_frames", np.array(diag.times), diag.snapshots, bg, pe)
+            save_theta_frames(pe_dir / "theta_frames", np.array(diag.times), diag.snapshots, bg)
 
             times = np.array(diag.times, dtype=float)
             edots = []
@@ -202,6 +201,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             etas = np.array(etas)
             ratio = np.divide(edots, etas, out=np.zeros_like(edots), where=etas>0)
             np.savez_compressed(pe_dir / "edot_timeseries.npz", t=times, edot=edots, Etheta=etas, ratio=ratio)
+            # Plot Edot and ratio time series
+            fig_ts, (ax_e, ax_r) = plt.subplots(2, 1, figsize=(6.0, 5.0), dpi=150, sharex=True, gridspec_kw={"height_ratios":[2.0,1.0], "hspace":0.05})
+            ax_e.plot(times, edots, '-o', ms=3)
+            ax_e.set_ylabel(r"$\dot{E}_\theta$"); ax_e.grid(True, ls=':', lw=0.6)
+            ax_r.plot(times, ratio, '-o', ms=3)
+            ax_r.set_xlabel("time"); ax_r.set_ylabel(r"$\dot{E}_\theta / E_\theta$"); ax_r.grid(True, ls=':', lw=0.6)
+            fig_ts.tight_layout(); fig_ts.savefig(pe_dir / "edot_timeseries.png", bbox_inches='tight'); plt.close(fig_ts)
 
             late = times > 4.0
             if np.any(late):
