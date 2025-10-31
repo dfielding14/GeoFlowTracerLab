@@ -34,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from scalar_advection import ScalarAdvectionAPI  # noqa: E402
 from scalar_advection.velocity import generate_divfree_field  # noqa: E402
-from scalar_advection.structure import structure_functions  # noqa: E402
+from scalar_advection.structure import structure_functions, s2_fft_vector  # noqa: E402
 from scalar_advection.fitting import best_powerlaw_fit  # noqa: E402
 
 
@@ -109,6 +109,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             use_fft_for_p2=True,
             signed_longitudinal=False,
         )
+        # Force p=2 magnitude to use FFT-based estimator explicitly
+        orders_arr = sf["orders"]
+        j2 = np.where(np.isclose(orders_arr, 2.0))[0]
+        if j2.size:
+            r2, S2_fft = s2_fft_vector(ux, uy, sf["ell_edges"])
+            sf["mag"][j2, :] = S2_fft
 
         # Save raw results
         np.savez_compressed(out_dir / f"velocity_sf_alpha_{a:.3f}.npz", **sf)
@@ -146,18 +152,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         fig.savefig(out_dir / f"velocity_sf_alpha_{a:.3f}.png", bbox_inches='tight')
         plt.close(fig)
 
-        # Add to combined overlay (use only p=1 curve to declutter)
-        y1 = root_curves[0]  # p=1
-        axA_top.loglog(r, y1, '-', lw=1.8, color=col, label=f"alpha={a:g}")
-        cen, sl = sliding_log_slope(r, y1, window=4)
+        # Add to combined overlay (use p=2 curve to declutter)
+        # Find index for p=2; fall back to p=1 if not present
+        try:
+            idx2 = list(orders).index(2)
+        except ValueError:
+            idx2 = 0
+        y2 = root_curves[idx2]
+        axA_top.loglog(r, y2, '-', lw=1.8, color=col, label=f"alpha={a:g}")
+        cen, sl = sliding_log_slope(r, y2, window=4)
         if cen.size:
             axA_bot.semilogx(cen, sl, '-', lw=1.6, color=col)
 
-    axA_top.set_ylabel(r"$(S_1)^{1/1}$")
+    axA_top.set_ylabel(r"$(S_2)^{1/2}$")
     axA_top.grid(True, which='both', ls=':', lw=0.6)
     axA_top.legend(frameon=False)
     axA_bot.set_xlabel(r"$\ell/\Delta x$")
-    axA_bot.set_ylabel(r"$d\log S_1 / d\log\ell$")
+    axA_bot.set_ylabel(r"$d\log (S_2^{1/2}) / d\log\ell$")
     axA_bot.grid(True, which='both', ls=':', lw=0.6)
     fig_all.savefig(out_dir / "velocity_sf_overlay.png", bbox_inches='tight')
     plt.close(fig_all)
@@ -167,4 +178,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
