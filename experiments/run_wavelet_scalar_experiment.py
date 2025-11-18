@@ -120,6 +120,7 @@ def best_fixed_slope_segment(
 class RunConfig:
     mode: str
     grid_size: int
+    alpha: float
     peclet_values: Sequence[float]
     t_end: float
     cfl: float
@@ -211,6 +212,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Floating-point precision for grids.",
     )
     parser.add_argument(
+        "--alpha",
+        type=float,
+        default=1.0 / 3.0,
+        help="Target spatial structure-function exponent for |δu| ∝ ℓ^alpha (default: 1/3).",
+    )
+    parser.add_argument(
         "--velocity-seed",
         type=int,
         default=1,
@@ -243,7 +250,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("examples") / "wavelet_scalar_outputs",
+        default=Path("experimental_results") / "wavelet_scalar_outputs",
         help="Directory where experiment folders will be created.",
     )
     parser.add_argument(
@@ -280,6 +287,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
     return RunConfig(
         mode=args.mode,
         grid_size=grid,
+        alpha=float(args.alpha),
         peclet_values=tuple(float(pe) for pe in peclet_values),
         t_end=args.t_end,
         cfl=args.cfl,
@@ -462,6 +470,36 @@ def scalar_structure_function_plot(
     fig.savefig(fname, bbox_inches="tight")
     plt.close(fig)
     return sf_scalar
+
+
+def plot_and_save_dissipation(
+    pe_dir: Path, times: np.ndarray, grad_sq: np.ndarray, eps: np.ndarray, kappa: float
+) -> None:
+    np.savez_compressed(
+        pe_dir / "dissipation_timeseries.npz",
+        t=times,
+        grad_sq=grad_sq,
+        epsilon=eps,
+        kappa=kappa,
+    )
+    if times.size >= 2:
+        dt = np.diff(times)
+        mid = 0.5 * (grad_sq[:-1] + grad_sq[1:])
+        cum = np.concatenate([[0.0], np.cumsum(kappa * mid * dt)])
+    else:
+        cum = np.zeros_like(times)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7.0, 5.6), dpi=160, sharex=True)
+    ax1.plot(times, eps, "-", lw=1.6)
+    ax1.set_ylabel(r"$\epsilon_\theta(t) = 2\,\kappa\,\langle |\nabla\theta|^2 \rangle$")
+    ax1.grid(True, ls=":", lw=0.6)
+    ax2.plot(times, cum, "-", lw=1.8)
+    ax2.set_xlabel("time")
+    ax2.set_ylabel(r"$\kappa \int_0^t \langle |\nabla\theta|^2 \rangle \, dt$")
+    ax2.grid(True, ls=":", lw=0.6)
+    fig.tight_layout()
+    fig.savefig(pe_dir / "dissipation_timeseries.png", bbox_inches="tight")
+    plt.close(fig)
 
 
 def yaglom_statistics(
@@ -722,6 +760,16 @@ def run_scalar_case(
         fname=sf_path,
     )
 
+    # Save and plot dissipation time series
+    if diagnostics.times_ts.size and diagnostics.dissipation_ts.size and diagnostics.grad_sq_ts.size:
+        plot_and_save_dissipation(
+            pe_dir,
+            diagnostics.times_ts,
+            diagnostics.grad_sq_ts,
+            diagnostics.dissipation_ts,
+            diagnostics.kappa,
+        )
+
     yaglom_data = yaglom_statistics(
         ux,
         uy,
@@ -745,6 +793,7 @@ def run_scalar_case(
         "dt": diagnostics.dt,
         "grad_sq_integral": diagnostics.grad_sq_integral,
         "edot": edot,
+        "dissipation_series": "dissipation_timeseries.npz",
         "yaglom_slope": float(slope) if slope is not None else None,
         "yaglom_counts": yaglom_data["counts"].tolist(),
         "samples_per_disp": run_cfg.yaglom_samples,
@@ -806,6 +855,7 @@ def main(argv: Sequence[str]) -> int:
         {
             "mode": run_cfg.mode,
             "grid_size": run_cfg.grid_size,
+            "alpha": run_cfg.alpha,
             "peclet_values": list(run_cfg.peclet_values),
             "t_end": run_cfg.t_end,
             "cfl": run_cfg.cfl,
@@ -834,7 +884,7 @@ def main(argv: Sequence[str]) -> int:
         N=run_cfg.grid_size,
         lam_min=3,
         lam_max=run_cfg.grid_size,
-        slope=-5.0 / 3.0,
+        alpha=run_cfg.alpha,
         wavelet="mexh",
         sparsity=0.0,
         seed=run_cfg.velocity_seed,

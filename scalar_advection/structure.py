@@ -108,8 +108,11 @@ def radial_profile_from_map(arr2d: Array, ell_edges: Array) -> Tuple[Array, Arra
 
 
 def s2_fft_scalar(field: Array, ell_edges: Array) -> Tuple[Array, Array]:
-    F = np.fft.fft2(field)
-    corr = np.fft.ifft2(np.abs(F) ** 2).real
+    # Use float64 FFT to avoid overflow in power and improve numerical stability
+    F = np.fft.fft2(field.astype(np.float64, copy=False))
+    power = np.abs(F)
+    power *= power
+    corr = np.fft.ifft2(power).real
     corr = np.fft.fftshift(corr) / field.size
     mu2 = np.mean(field**2)
     S2_map = 2.0 * (mu2 - corr)
@@ -117,9 +120,13 @@ def s2_fft_scalar(field: Array, ell_edges: Array) -> Tuple[Array, Array]:
 
 
 def s2_fft_vector(ux: Array, uy: Array, ell_edges: Array) -> Tuple[Array, Array]:
-    Fx = np.fft.fft2(ux)
-    Fy = np.fft.fft2(uy)
-    corr = np.fft.ifft2(np.abs(Fx) ** 2 + np.abs(Fy) ** 2).real
+    Fx = np.fft.fft2(ux.astype(np.float64, copy=False))
+    Fy = np.fft.fft2(uy.astype(np.float64, copy=False))
+    px = np.abs(Fx)
+    px *= px
+    py = np.abs(Fy)
+    py *= py
+    corr = np.fft.ifft2(px + py).real
     corr = np.fft.fftshift(corr) / ux.size
     mu2 = np.mean(ux**2 + uy**2)
     S2_map = 2.0 * (mu2 - corr)
@@ -147,8 +154,12 @@ def _sf_scalar_via_rolls(field: Array, orders: Array, ell_edges: Array, displace
             continue
         diff = np.roll(field, shift=(dy, dx), axis=(0, 1)) - field
         adiff = np.abs(diff)
+        # Reuse a power buffer to avoid repeated allocations
+        pow_buf = np.empty_like(adiff)
         for j, p in enumerate(orders):
-            sums[j, b] += np.mean(adiff**p)
+            # Compute adiff**p into pow_buf
+            np.power(adiff, p, out=pow_buf)
+            sums[j, b] += float(np.mean(pow_buf))
         counts[b] += 1
     S = sums / np.maximum(1, counts)
     centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
@@ -179,16 +190,25 @@ def _sf_vector_via_rolls(
         ex, ey = dx / r, dy / r
         long_ = dux * ex + duy * ey
         tran_ = -dux * ey + duy * ex
-        mag_ = np.hypot(dux, duy)
+        mag2 = dux * dux + duy * duy
+        mag_ = np.sqrt(mag2)
+        # Allocate reusable buffers for powers
+        pow_buf_mag = np.empty_like(mag_)
+        pow_buf_long = np.empty_like(long_)
+        pow_buf_tran = np.empty_like(tran_)
         for j, p in enumerate(orders):
-            sums_mag[j, b] += np.mean(np.abs(mag_) ** p)
+            np.power(np.abs(mag_), p, out=pow_buf_mag)
+            sums_mag[j, b] += float(np.mean(pow_buf_mag))
             if signed_longitudinal:
                 if abs(p - int(round(p))) > 1e-12:
                     raise ValueError("signed_longitudinal=True requires integer orders.")
-                sums_long[j, b] += np.mean(long_**p)
+                np.power(long_, p, out=pow_buf_long)
+                sums_long[j, b] += float(np.mean(pow_buf_long))
             else:
-                sums_long[j, b] += np.mean(np.abs(long_) ** p)
-            sums_tran[j, b] += np.mean(np.abs(tran_) ** p)
+                np.power(np.abs(long_), p, out=pow_buf_long)
+                sums_long[j, b] += float(np.mean(pow_buf_long))
+            np.power(np.abs(tran_), p, out=pow_buf_tran)
+            sums_tran[j, b] += float(np.mean(pow_buf_tran))
         counts[b] += 1
     centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
     return {

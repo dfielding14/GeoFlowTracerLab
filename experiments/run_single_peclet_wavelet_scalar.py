@@ -38,13 +38,14 @@ matplotlib.use("Agg")
 
 from scalar_advection import ScalarAdvectionAPI, ScalarConfig, generate_divfree_field  # noqa: E402
 
-from run_wavelet_scalar_experiment import (  # noqa: E402
+from experiments.run_wavelet_scalar_experiment import (  # noqa: E402
     DEFAULT_ORDERS,
     DEFAULT_N_DISP,
     RunConfig,
     ScalarRunResult,
     ensure_dir,
     format_peclet,
+    plot_and_save_dissipation,
     plot_yaglom,
     save_velocity_diagnostics,
     scalar_structure_function_plot,
@@ -56,6 +57,7 @@ from run_wavelet_scalar_experiment import (  # noqa: E402
 class SingleRunConfig:
     grid: int
     peclet: float
+    alpha: float
     dtype: np.dtype
     integrator: str
     cfl: float
@@ -86,6 +88,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default="float32",
         help="Real-space dtype for the solver (float32 recommended for speed).",
     )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=1.0 / 3.0,
+        help="Target spatial structure-function exponent for |δu| ∝ ℓ^alpha (default: 1/3).",
+    )
     parser.add_argument("--fft-threads", type=int, default=8, help="Threads for FFT backend.")
     parser.add_argument("--velocity-seed", type=int, default=1, help="RNG seed for velocity field.")
     parser.add_argument("--disp-seed", type=int, default=0, help="Seed for displacement sampling.")
@@ -110,7 +118,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("examples") / "single_wavelet_runs",
+        default=Path("experimental_results") / "single_wavelet_runs",
         help="Root directory for outputs.",
     )
     parser.add_argument(
@@ -189,6 +197,7 @@ def run_single_simulation(args: argparse.Namespace) -> Tuple[ScalarRunResult, Pa
     config = SingleRunConfig(
         grid=args.grid,
         peclet=args.peclet,
+        alpha=float(args.alpha),
         dtype=np.float32 if args.dtype == "float32" else np.float64,
         integrator=args.integrator,
         cfl=args.cfl,
@@ -207,6 +216,7 @@ def run_single_simulation(args: argparse.Namespace) -> Tuple[ScalarRunResult, Pa
     meta = {
         "grid": config.grid,
         "peclet": config.peclet,
+        "alpha": config.alpha,
         "dtype": str(config.dtype),
         "integrator": config.integrator,
         "cfl": config.cfl,
@@ -232,7 +242,7 @@ def run_single_simulation(args: argparse.Namespace) -> Tuple[ScalarRunResult, Pa
             N=config.grid,
             lam_min=3,
             lam_max=config.grid,
-            slope=-5.0 / 3.0,
+            alpha=config.alpha,
             wavelet="mexh",
             sparsity=0.0,
             seed=config.velocity_seed,
@@ -257,6 +267,7 @@ def run_single_simulation(args: argparse.Namespace) -> Tuple[ScalarRunResult, Pa
     run_cfg = RunConfig(
         mode="single",
         grid_size=config.grid,
+        alpha=config.alpha,
         peclet_values=(config.peclet,),
         t_end=config.t_end,
         cfl=config.cfl,
@@ -389,6 +400,16 @@ def run_scalar_case_single(
 
     np.save(pe_dir / "theta_final.npy", theta_final)
 
+    # Save and plot dissipation time series
+    if diagnostics.times_ts.size and diagnostics.dissipation_ts.size and diagnostics.grad_sq_ts.size:
+        plot_and_save_dissipation(
+            pe_dir,
+            diagnostics.times_ts,
+            diagnostics.grad_sq_ts,
+            diagnostics.dissipation_ts,
+            diagnostics.kappa,
+        )
+
     scalar_structure_function_plot(
         api,
         theta_final,
@@ -420,6 +441,7 @@ def run_scalar_case_single(
         "dt": diagnostics.dt,
         "grad_sq_integral": diagnostics.grad_sq_integral,
         "edot": diagnostics.kappa * diagnostics.grad_sq_integral,
+        "dissipation_series": "dissipation_timeseries.npz",
         "yaglom_slope": float(slope) if slope is not None else None,
         "yaglom_unit_slope_range": (
             [

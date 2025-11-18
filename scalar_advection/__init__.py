@@ -3,7 +3,14 @@ Scalar advection toolkit providing modular velocity generation, solver, and stat
 """
 
 from .api import ScalarAdvectionAPI
-from .velocity import VelocityConfig, VelocityFieldGenerator, generate_velocity_field, generate_divfree_field
+from .velocity import (
+    VelocityConfig,
+    VelocityFieldGenerator,
+    generate_velocity_field,
+    generate_divfree_field,
+    FourierTemporalConfig,
+    FourierTemporalVelocityProcess,
+)
 from .solver import ScalarAdvectionDiffusionSolver, ScalarConfig, SimulationDiagnostics
 from .spectra import kinetic_energy_spectrum, plot_energy_spectrum, scalar_power_spectrum, plot_scalar_spectrum
 from .structure import (
@@ -15,6 +22,7 @@ from .structure import (
 )
 from .fft import FFT_BACKEND, set_fftw_threads, warm_fft_cache
 from .fractal import box_counting
+from .temporal import TemporalSFResult, measure_temporal_structure_function
 
 __all__ = [
     "ScalarAdvectionAPI",
@@ -22,6 +30,8 @@ __all__ = [
     "VelocityFieldGenerator",
     "generate_velocity_field",
     "generate_divfree_field",
+    "FourierTemporalConfig",
+    "FourierTemporalVelocityProcess",
     "ScalarAdvectionDiffusionSolver",
     "ScalarConfig",
     "SimulationDiagnostics",
@@ -38,4 +48,6 @@ __all__ = [
     "set_fftw_threads",
     "warm_fft_cache",
     "box_counting",
+    "TemporalSFResult",
+    "measure_temporal_structure_function",
 ]

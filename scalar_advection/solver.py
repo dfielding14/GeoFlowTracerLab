@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .fft import FFT_BACKEND, fft2, ifft2
+from .fft import enable_fft_profiling, get_fft_profile
 from .grid import SpectralGrid
 
 
@@ -41,6 +42,9 @@ class ScalarConfig:
     save_to_disk: bool = False
     save_dir: Optional[str] = None
     integrator: str = "etdrk4"
+    # Profiling controls
+    profile: bool = False
+    profile_fft: bool = False
 
 
 @dataclass
@@ -54,6 +58,10 @@ class SimulationDiagnostics:
     n_steps: int = 0
     frames: Optional[List[np.ndarray]] = None
     grad_sq_integral: float = 0.0
+    # Full time series diagnostics
+    times_ts: np.ndarray = field(default_factory=lambda: np.array([]))
+    grad_sq_ts: np.ndarray = field(default_factory=lambda: np.array([]))
+    dissipation_ts: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
 class ScalarAdvectionDiffusionSolver:
@@ -65,6 +73,18 @@ class ScalarAdvectionDiffusionSolver:
         self.grid = grid
         self.dtype = grid.dtype
         self.cdtype = grid.cdtype
+        # Work buffers (allocated lazily)
+        self._tmp_hat = None  # complex buffer for k-space products
+        self._adv_buf = None  # real buffer for advection term in physical space
+        # Precomputed complex wavenumber factors (for reuse in derivatives)
+        self._ikx = (1j * self.grid.kx).astype(self.cdtype)
+        self._iky = (1j * self.grid.ky).astype(self.cdtype)
+
+    def _ensure_work_buffers(self) -> None:
+        if self._tmp_hat is None or self._tmp_hat.shape != (self.grid.N, self.grid.N):
+            self._tmp_hat = np.empty((self.grid.N, self.grid.N), dtype=self.cdtype)
+        if self._adv_buf is None or self._adv_buf.shape != (self.grid.N, self.grid.N):
+            self._adv_buf = np.empty((self.grid.N, self.grid.N), dtype=self.dtype)
 
     # ------------------------------------------------------------------
     # Initial conditions
@@ -91,10 +111,12 @@ class ScalarAdvectionDiffusionSolver:
     # Diagnostics helpers
     # ------------------------------------------------------------------
     def compute_scalar_dissipation(self, theta: np.ndarray, kappa: float) -> float:
+        # Accumulate in float64 to avoid overflow in square/add
         theta_hat = fft2(theta)
-        theta_x = ifft2(1j * self.grid.kx * theta_hat).real
-        theta_y = ifft2(1j * self.grid.ky * theta_hat).real
-        return 2.0 * kappa * float(np.mean(theta_x**2 + theta_y**2))
+        theta_x = ifft2(1j * self.grid.kx * theta_hat).real.astype(np.float64, copy=False)
+        theta_y = ifft2(1j * self.grid.ky * theta_hat).real.astype(np.float64, copy=False)
+        val = np.mean(theta_x * theta_x + theta_y * theta_y, dtype=np.float64)
+        return 2.0 * float(kappa) * float(val)
 
     @staticmethod
     def load_snapshots(snapshot_dir: str) -> Tuple[List[np.ndarray], np.ndarray, Dict]:
@@ -136,6 +158,12 @@ class ScalarAdvectionDiffusionSolver:
         diagnostics = SimulationDiagnostics(dt=dt, kappa=kappa, n_steps=nsteps)
         if config.output_frames:
             diagnostics.frames = []
+        # Enable FFT profiling if requested
+        if getattr(config, "profile_fft", False):
+            enable_fft_profiling(True)
+
+        # Walltime accumulators
+        nl_time_total = 0.0
 
         theta_hat = fft2(theta0).astype(self.cdtype)
         Llin = -kappa * self.grid.k2
@@ -148,6 +176,10 @@ class ScalarAdvectionDiffusionSolver:
             F_hat = None
 
         grad_sq_prev = self._mean_grad_sq(theta_hat)
+        # Initialize time-series at t=0
+        ts_times: List[float] = [0.0]
+        ts_grad_sq: List[float] = [float(grad_sq_prev)]
+        ts_eps: List[float] = [float(2.0 * kappa * grad_sq_prev)]
 
         integrator = (config.integrator or "etdrk4").lower()
         if integrator not in {"etdrk4", "rk4", "heun"}:
@@ -190,15 +222,21 @@ class ScalarAdvectionDiffusionSolver:
 
                 theta_hat = E * theta_hat + f1 * Nv + 2.0 * f2 * (Na + Nb) + f3 * Nc
             elif integrator == "rk4":
+                t0 = time.perf_counter() if config.profile else None
                 k1 = rhs(theta_hat)
                 k2 = rhs(theta_hat + 0.5 * dt * k1)
                 k3 = rhs(theta_hat + 0.5 * dt * k2)
                 k4 = rhs(theta_hat + dt * k3)
                 theta_hat = theta_hat + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+                if config.profile:
+                    nl_time_total += (time.perf_counter() - t0)
             else:  # Heun / RK2
+                t0 = time.perf_counter() if config.profile else None
                 k1 = rhs(theta_hat)
                 k2 = rhs(theta_hat + dt * k1)
                 theta_hat = theta_hat + 0.5 * dt * (k1 + k2)
+                if config.profile:
+                    nl_time_total += (time.perf_counter() - t0)
 
             tnow = n * dt
             if config.save_every is not None and (n % config.save_every == 0 or n == nsteps):
@@ -232,13 +270,30 @@ class ScalarAdvectionDiffusionSolver:
             grad_sq_curr = self._mean_grad_sq(theta_hat)
             diagnostics.grad_sq_integral += 0.5 * (grad_sq_prev + grad_sq_curr) * dt
             grad_sq_prev = grad_sq_curr
+            # Append time-resolved diagnostics
+            ts_times.append(float(tnow))
+            ts_grad_sq.append(float(grad_sq_curr))
+            ts_eps.append(float(2.0 * kappa * grad_sq_curr))
 
         theta_final = ifft2(theta_hat).real.astype(self.dtype)
+
+        # Finalize time series arrays
+        diagnostics.times_ts = np.asarray(ts_times, dtype=self.dtype)
+        diagnostics.grad_sq_ts = np.asarray(ts_grad_sq, dtype=self.dtype)
+        diagnostics.dissipation_ts = np.asarray(ts_eps, dtype=self.dtype)
 
         if verbose:
             print(f"Simulation complete. Final time: {t_end:.3f}")
             if snapshot_dir and snapshot_count > 0:
                 print(f"  Saved {snapshot_count} snapshots to: {snapshot_dir}/")
+
+        # Attach profiling info if enabled
+        if config.profile or config.profile_fft:
+            prof = {"nonlinear_time_total": nl_time_total, "steps": nsteps}
+            if config.profile_fft:
+                prof["fft"] = get_fft_profile(reset=True)
+            # attach as attribute to diagnostics for convenience
+            diagnostics.profile = prof  # type: ignore[attr-defined]
 
         return theta_final, diagnostics
 
@@ -281,6 +336,171 @@ class ScalarAdvectionDiffusionSolver:
 
         return dt, nsteps, float(kappa), float(t_end)
 
+    # ------------------------------------------------------------------
+    # Time-varying velocity evolution
+    # ------------------------------------------------------------------
+    def evolve_with_velocity_process(
+        self,
+        theta0: np.ndarray,
+        velocity_process,
+        config: ScalarConfig,
+        *,
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, SimulationDiagnostics]:
+        """
+        Evolve the scalar with a time-dependent velocity provided by a process
+        object exposing ``get_velocity() -> (ux, uy)`` and ``step(dt)``.
+
+        Supports integrators 'rk4' and 'heun'. For 'etdrk4', use a fixed
+        velocity field via evolve().
+        """
+        theta0 = np.asarray(theta0, dtype=self.dtype)
+        uxn, uyn = velocity_process.get_velocity()
+        uxn = np.asarray(uxn, dtype=self.dtype)
+        uyn = np.asarray(uyn, dtype=self.dtype)
+
+        dt, nsteps, kappa, t_end = self._resolve_time_controls(theta0, uxn, uyn, config)
+        diagnostics = SimulationDiagnostics(dt=dt, kappa=kappa, n_steps=nsteps)
+        if config.output_frames:
+            diagnostics.frames = []
+
+        theta_hat = fft2(theta0).astype(self.cdtype)
+        Llin = -kappa * self.grid.k2
+
+        Gx, Gy = config.mean_grad
+
+        def N_with_u(theta_hat_state: np.ndarray, ux: np.ndarray, uy: np.ndarray) -> np.ndarray:
+            theta_x = ifft2(1j * self.grid.kx * theta_hat_state).real
+            theta_y = ifft2(1j * self.grid.ky * theta_hat_state).real
+            adv = ux * theta_x + uy * theta_y
+            N_hat = -fft2(adv).astype(self.cdtype)
+            N_hat *= self.grid.dealias_mask
+            if Gx != 0.0 or Gy != 0.0:
+                F_hat = fft2(-(ux * Gx + uy * Gy)).astype(self.cdtype)
+                N_hat += F_hat
+            return N_hat
+
+        grad_sq_prev = self._mean_grad_sq(theta_hat)
+        ts_times: List[float] = [0.0]
+        ts_grad_sq: List[float] = [float(grad_sq_prev)]
+        ts_eps: List[float] = [float(2.0 * kappa * grad_sq_prev)]
+
+        integrator = (config.integrator or "rk4").lower()
+        if integrator not in {"rk4", "heun"}:
+            raise ValueError("evolve_with_velocity_process supports 'rk4' and 'heun' only")
+
+        snapshot_dir = None
+        snapshot_count = 0
+        if config.save_to_disk:
+            snapshot_dir = config.save_dir or self._auto_snapshot_dir()
+            os.makedirs(snapshot_dir, exist_ok=True)
+
+        diagnostics.times = np.append(diagnostics.times, 0.0)
+        if config.save_every is not None:
+            theta_snapshot0 = ifft2(theta_hat).real.astype(self.dtype)
+            if config.save_to_disk and snapshot_dir:
+                np.save(os.path.join(snapshot_dir, "theta_00000_t0.0000.npy"), theta_snapshot0)
+            else:
+                diagnostics.snapshots.append(theta_snapshot0)
+
+        frame_step = None
+        if config.output_frames and config.frame_interval is not None:
+            frame_step = max(1, int(round(config.frame_interval / dt)))
+
+        for n in range(1, nsteps + 1):
+            if integrator == "rk4":
+                # t_n
+                k1 = Llin * theta_hat + N_with_u(theta_hat, uxn, uyn)
+
+                # t_n + dt/2
+                velocity_process.step(dt / 2.0)
+                uxm, uym = velocity_process.get_velocity()
+                uxm = np.asarray(uxm, dtype=self.dtype)
+                uym = np.asarray(uym, dtype=self.dtype)
+
+                k2_state = theta_hat + 0.5 * dt * k1
+                k2 = Llin * k2_state + N_with_u(k2_state, uxm, uym)
+
+                k3_state = theta_hat + 0.5 * dt * k2
+                k3 = Llin * k3_state + N_with_u(k3_state, uxm, uym)
+
+                # t_n + dt
+                velocity_process.step(dt / 2.0)
+                uxn1, uyn1 = velocity_process.get_velocity()
+                uxn1 = np.asarray(uxn1, dtype=self.dtype)
+                uyn1 = np.asarray(uyn1, dtype=self.dtype)
+
+                k4_state = theta_hat + dt * k3
+                k4 = Llin * k4_state + N_with_u(k4_state, uxn1, uyn1)
+
+                theta_hat = theta_hat + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+                # Advance stored velocity to t_{n+1}
+                uxn, uyn = uxn1, uyn1
+
+            else:  # Heun
+                k1 = Llin * theta_hat + N_with_u(theta_hat, uxn, uyn)
+                velocity_process.step(dt)
+                uxn1, uyn1 = velocity_process.get_velocity()
+                uxn1 = np.asarray(uxn1, dtype=self.dtype)
+                uyn1 = np.asarray(uyn1, dtype=self.dtype)
+                k2_state = theta_hat + dt * k1
+                k2 = Llin * k2_state + N_with_u(k2_state, uxn1, uyn1)
+                theta_hat = theta_hat + 0.5 * dt * (k1 + k2)
+                uxn, uyn = uxn1, uyn1
+
+            tnow = n * dt
+
+            if config.save_every is not None and (n % config.save_every == 0 or n == nsteps):
+                theta_snapshot = ifft2(theta_hat).real.astype(self.dtype)
+                if config.save_to_disk and snapshot_dir:
+                    filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{tnow:.4f}.npy")
+                    np.save(filename, theta_snapshot)
+                    if snapshot_count == 0:
+                        metadata = {
+                            "N": self.grid.N,
+                            "L": self.grid.L,
+                            "dt": dt,
+                            "kappa": kappa,
+                            "peclet": config.peclet,
+                            "mean_grad": config.mean_grad,
+                            "t_end": config.t_end,
+                            "save_every": config.save_every,
+                            "velocity": "time_varying_fourier_fractional",
+                            "beta": getattr(getattr(velocity_process, 'beta', None), '__float__', lambda: None)() if hasattr(velocity_process, 'beta') else None,
+                        }
+                        np.save(os.path.join(snapshot_dir, "metadata.npy"), metadata)
+                    snapshot_count += 1
+                else:
+                    diagnostics.snapshots.append(theta_snapshot)
+                diagnostics.times = np.append(diagnostics.times, tnow)
+
+            if frame_step is not None and (n % frame_step == 0 or n == nsteps):
+                diagnostics.frames.append(ifft2(theta_hat).real.astype(self.dtype))
+
+            if verbose and n % max(1, nsteps // 10) == 0:
+                print(f"  Step {n}/{nsteps} (t={tnow:.3f}/{t_end:.3f})")
+
+            grad_sq_curr = self._mean_grad_sq(theta_hat)
+            diagnostics.grad_sq_integral += 0.5 * (grad_sq_prev + grad_sq_curr) * dt
+            grad_sq_prev = grad_sq_curr
+            ts_times.append(float(tnow))
+            ts_grad_sq.append(float(grad_sq_curr))
+            ts_eps.append(float(2.0 * kappa * grad_sq_curr))
+
+        theta_final = ifft2(theta_hat).real.astype(self.dtype)
+
+        diagnostics.times_ts = np.asarray(ts_times, dtype=self.dtype)
+        diagnostics.grad_sq_ts = np.asarray(ts_grad_sq, dtype=self.dtype)
+        diagnostics.dissipation_ts = np.asarray(ts_eps, dtype=self.dtype)
+
+        if verbose:
+            print(f"Simulation complete. Final time: {t_end:.3f}")
+            if snapshot_dir and snapshot_count > 0:
+                print(f"  Saved {snapshot_count} snapshots to: {snapshot_dir}/")
+
+        return theta_final, diagnostics
+
     def _nonlinear_term(
         self,
         theta_hat: np.ndarray,
@@ -288,14 +508,31 @@ class ScalarAdvectionDiffusionSolver:
         uy: np.ndarray,
         F_hat: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        theta_x = ifft2(1j * self.grid.kx * theta_hat).real
-        theta_y = ifft2(1j * self.grid.ky * theta_hat).real
-        adv = ux * theta_x + uy * theta_y
-        N_hat = -fft2(adv).astype(self.cdtype)
+        # Ensure scratch buffers
+        self._ensure_work_buffers()
+
+        # theta_x = ifft2(i kx theta_hat).real
+        self._tmp_hat[...] = theta_hat
+        self._tmp_hat *= self._ikx
+        theta_x = ifft2(self._tmp_hat).real
+
+        # adv_buf = ux * theta_x (in-place)
+        np.multiply(ux, theta_x, out=self._adv_buf)
+
+        # theta_y = ifft2(i ky theta_hat).real
+        self._tmp_hat[...] = theta_hat
+        self._tmp_hat *= self._iky
+        theta_y = ifft2(self._tmp_hat).real
+
+        # adv_buf += uy * theta_y (reusing theta_y as a temp if safe)
+        np.multiply(uy, theta_y, out=theta_y)
+        np.add(self._adv_buf, theta_y, out=self._adv_buf)
+
+        N_hat = -fft2(self._adv_buf)
         N_hat *= self.grid.dealias_mask
         if F_hat is not None:
-            N_hat += F_hat
-        return N_hat
+            N_hat = N_hat + F_hat
+        return N_hat.astype(self.cdtype, copy=False)
 
     def _etdrk4_coeffs(self, Llin: np.ndarray, dt: float, M: int = 16) -> Tuple[np.ndarray, ...]:
         E = np.exp(Llin * dt)
@@ -319,9 +556,10 @@ class ScalarAdvectionDiffusionSolver:
         return os.path.join("snapshots", f"run_{timestamp}_fft{FFT_BACKEND.lower()}")
 
     def _mean_grad_sq(self, theta_hat: np.ndarray) -> float:
-        theta_x = ifft2(1j * self.grid.kx * theta_hat).real
-        theta_y = ifft2(1j * self.grid.ky * theta_hat).real
-        return float(np.mean(theta_x**2 + theta_y**2))
+        # Accumulate in float64 to reduce overflow risk
+        theta_x = ifft2(1j * self.grid.kx * theta_hat).real.astype(np.float64, copy=False)
+        theta_y = ifft2(1j * self.grid.ky * theta_hat).real.astype(np.float64, copy=False)
+        return float(np.mean(theta_x * theta_x + theta_y * theta_y, dtype=np.float64))
 
 
 __all__ = ["ScalarConfig", "SimulationDiagnostics", "ScalarAdvectionDiffusionSolver"]

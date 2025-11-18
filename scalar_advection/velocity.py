@@ -8,7 +8,7 @@ previously bundled inside ``turbulent_scalar_sim``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import numpy as np
 
@@ -22,7 +22,8 @@ class VelocityConfig:
     Configuration for synthetic turbulent velocity field generation.
     """
 
-    beta: float = 5.0 / 3.0
+    # Spatial structure-function slope: E[|v(x) - v(x+ℓ)|] ∝ ℓ^alpha
+    alpha: float = 1.0 / 3.0
     urms: float = 1.0
     seed: Optional[int] = None
     f_sol: float = 1.0
@@ -79,7 +80,7 @@ class VelocityFieldGenerator:
         upx = kx * kdotu2 / denom
         upy = ky * kdotu2 / denom
 
-        amp = self._spectral_amplitude(config.beta, dtype)
+        amp = self._spectral_amplitude_alpha(config.alpha, dtype)
         window = self._compute_band_window(config.kmin, config.kmax, config.taper_width, dtype)
 
         usx *= amp * window
@@ -110,11 +111,15 @@ class VelocityFieldGenerator:
 
         return ux, uy
 
-    def _spectral_amplitude(self, beta: float, dtype) -> np.ndarray:
+    def _spectral_amplitude_alpha(self, alpha: float, dtype) -> np.ndarray:
+        """Amplitude envelope to target spatial SF slope alpha.
+
+        With beta = 2*alpha + 1, the amplitude scales as (k/k0)^{-(alpha+1)}.
+        """
         k0 = dtype(2.0 * np.pi / self.grid.L)
         amp = np.zeros_like(self.grid.k)
         mask = self.grid.k > 0.0
-        amp[mask] = (self.grid.k[mask] / k0) ** (-(1.0 + beta) / 2.0)
+        amp[mask] = (self.grid.k[mask] / k0) ** (-(alpha + 1.0))
         return amp
 
     def _compute_band_window(
@@ -196,6 +201,8 @@ def generate_divfree_field(
     lam_min: float = 8,
     lam_max: float = 64,
     slope: float = -5.0 / 3.0,
+    *,
+    alpha: Optional[float] = None,
     wavelet: str = "mexh",
     lam_ref: Optional[float] = None,
     amp: float = 1.0,
@@ -218,6 +225,11 @@ def generate_divfree_field(
     n_scales = max(1, int(np.ceil(np.log2(lam_max / lam_min))) + 1)
     lams = lam_min * 2.0 ** np.linspace(0, np.log2(lam_max / lam_min), n_scales)
     Psi_k = np.zeros((N, N), dtype=np.complex128)
+
+    # If `alpha` is provided, map to an equivalent spectral slope used here
+    # where negative `slope` corresponds to E(k) ∝ k^{slope}.
+    if alpha is not None:
+        slope = -(2.0 * float(alpha) + 1.0)
 
     for lam in lams:
         if wavelet.lower().startswith("mex"):
@@ -257,4 +269,112 @@ __all__ = [
     "VelocityFieldGenerator",
     "generate_velocity_field",
     "generate_divfree_field",
+]
+
+# ---------------------------------------------------------------------------
+# Time-evolving divergence-free velocity via Fourier coefficients with
+# fractional-increment dynamics (temporal structure function ∝ Δt^beta)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FourierTemporalConfig:
+    N: int = 256
+    L: float = 1.0
+    alpha: float = 1.0 / 3.0  # spatial structure exponent
+    beta: Optional[float] = None  # temporal SF exponent; defaults to alpha
+    kmin: Optional[float] = None
+    kmax: Optional[float] = None
+    taper_width: float = 0.0
+    tau: float = 0.2  # relaxation to avoid unbounded drift
+    sigma: float = 1.0  # noise amplitude scale
+    seed: Optional[int] = None
+    dtype: np.dtype = np.float64
+
+
+class FourierTemporalVelocityProcess:
+    """
+    Time-varying divergence-free velocity built from Fourier streamfunction
+    coefficients whose increments scale like dt^beta. This approximates a
+    fractional-increment process per mode with optional OU damping to keep the
+    field bounded.
+
+    The resulting temporal structure function of |u(t+Δt)-u(t)| scales roughly
+    like Δt^beta (for small Δt), with beta defaulting to the spatial alpha.
+    """
+
+    def __init__(self, config: FourierTemporalConfig):
+        self.cfg = config
+        self.N = int(config.N)
+        self.L = float(config.L)
+        self.alpha = float(config.alpha)
+        self.beta = float(config.alpha if config.beta is None else config.beta)
+        if self.beta <= 0.0:
+            raise ValueError("beta must be positive")
+        self.dtype = np.float32 if config.dtype == np.float32 else np.float64
+        self.cdtype = np.complex64 if self.dtype == np.float32 else np.complex128
+        self.rng = np.random.default_rng(config.seed)
+        self.t = 0.0
+
+        # Wavenumbers and masks
+        kx = 2 * np.pi * np.fft.fftfreq(self.N, d=self.L / self.N)
+        ky = 2 * np.pi * np.fft.fftfreq(self.N, d=self.L / self.N)
+        self.KX, self.KY = np.meshgrid(kx, ky, indexing="xy")
+        self.K = np.hypot(self.KX, self.KY)
+
+        self.kmin = None if config.kmin is None else float(config.kmin)
+        self.kmax = None if config.kmax is None else float(config.kmax)
+        band = np.ones((self.N, self.N), dtype=bool)
+        if self.kmin is not None:
+            band &= self.K >= self.kmin
+        if self.kmax is not None:
+            band &= self.K <= self.kmax
+        self.band = band
+
+        # Amplitude envelope for spatial structure (alpha)
+        self.Ak = np.zeros((self.N, self.N), dtype=self.dtype)
+        mask = self.K > 0.0
+        k0 = 2.0 * np.pi / self.L
+        self.Ak[mask] = (self.K[mask] / k0) ** (-(self.alpha + 1.0))
+        self.Ak[~self.band] = 0.0
+
+        # Streamfunction coefficients
+        self.Psi_k = np.zeros((self.N, self.N), dtype=self.cdtype)
+        self._ux: Optional[np.ndarray] = None
+        self._uy: Optional[np.ndarray] = None
+        self._dirty = True
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        self.Psi_k[...] = 0.0
+        self.t = 0.0
+        self._dirty = True
+
+    def step(self, dt: float) -> None:
+        dt = float(dt)
+        if dt == 0.0:
+            return
+        rho = np.exp(-dt / max(self.cfg.tau, 1e-30))
+        # Complex Gaussian noise with unit variance per real/imag component
+        eta = (self.rng.normal(size=self.Psi_k.shape) + 1j * self.rng.normal(size=self.Psi_k.shape)) / np.sqrt(2.0)
+        incr = (self.cfg.sigma * (dt ** self.beta)) * self.Ak * eta
+        self.Psi_k = (rho * self.Psi_k + incr).astype(self.cdtype, copy=False)
+        self.t += dt
+        self._dirty = True
+
+    def get_velocity(self) -> Tuple[np.ndarray, np.ndarray]:
+        if self._dirty or self._ux is None or self._uy is None:
+            Ux_k = 1j * self.KY * self.Psi_k
+            Uy_k = -1j * self.KX * self.Psi_k
+            ux = np.fft.ifft2(Ux_k).real.astype(self.dtype, copy=False)
+            uy = np.fft.ifft2(Uy_k).real.astype(self.dtype, copy=False)
+            self._ux, self._uy = ux, uy
+            self._dirty = False
+        return self._ux, self._uy
+
+
+__all__ += [
+    "FourierTemporalConfig",
+    "FourierTemporalVelocityProcess",
 ]
