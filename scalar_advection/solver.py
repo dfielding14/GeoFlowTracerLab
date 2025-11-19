@@ -10,13 +10,25 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TextIO
 
 import numpy as np
 
 from .fft import FFT_BACKEND, fft2, ifft2
 from .fft import enable_fft_profiling, get_fft_profile
 from .grid import SpectralGrid
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(seconds, 0.0)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours:d}h:{minutes:02d}m:{secs:04.1f}s"
+    if minutes > 0:
+        return f"{minutes:d}m:{secs:04.1f}s"
+    return f"{secs:0.1f}s"
 
 
 @dataclass
@@ -45,6 +57,10 @@ class ScalarConfig:
     # Profiling controls
     profile: bool = False
     profile_fft: bool = False
+    t_start: float = 0.0
+    log_stream: Optional[TextIO] = None
+    log_to_stdout: bool = True
+    progress_interval: int = 100
 
 
 @dataclass
@@ -79,6 +95,16 @@ class ScalarAdvectionDiffusionSolver:
         # Precomputed complex wavenumber factors (for reuse in derivatives)
         self._ikx = (1j * self.grid.kx).astype(self.cdtype)
         self._iky = (1j * self.grid.ky).astype(self.cdtype)
+
+    @staticmethod
+    def _log(message: str, stream: Optional[TextIO], to_stdout: bool, *, newline: bool = True) -> None:
+        """Write a message to the log stream and optionally stdout."""
+        end = "\n" if newline else ""
+        if stream is not None:
+            stream.write(message + end)
+            stream.flush()
+        if to_stdout:
+            print(message, end=end, flush=True)
 
     def _ensure_work_buffers(self) -> None:
         if self._tmp_hat is None or self._tmp_hat.shape != (self.grid.N, self.grid.N):
@@ -155,6 +181,8 @@ class ScalarAdvectionDiffusionSolver:
         uy = np.asarray(uy, dtype=self.dtype)
 
         dt, nsteps, kappa, t_end = self._resolve_time_controls(theta0, ux, uy, config)
+        t_start = float(getattr(config, "t_start", 0.0))
+        t_final = t_start + t_end
         diagnostics = SimulationDiagnostics(dt=dt, kappa=kappa, n_steps=nsteps)
         if config.output_frames:
             diagnostics.frames = []
@@ -167,6 +195,9 @@ class ScalarAdvectionDiffusionSolver:
 
         theta_hat = fft2(theta0).astype(self.cdtype)
         Llin = -kappa * self.grid.k2
+        log_stream = getattr(config, "log_stream", None)
+        log_to_stdout = bool(getattr(config, "log_to_stdout", True))
+        progress_every = max(1, int(getattr(config, "progress_interval", 100)))
 
         Gx, Gy = config.mean_grad
         if Gx != 0.0 or Gy != 0.0:
@@ -177,7 +208,7 @@ class ScalarAdvectionDiffusionSolver:
 
         grad_sq_prev = self._mean_grad_sq(theta_hat)
         # Initialize time-series at t=0
-        ts_times: List[float] = [0.0]
+        ts_times: List[float] = [float(t_start)]
         ts_grad_sq: List[float] = [float(grad_sq_prev)]
         ts_eps: List[float] = [float(2.0 * kappa * grad_sq_prev)]
 
@@ -197,10 +228,12 @@ class ScalarAdvectionDiffusionSolver:
             snapshot_dir = config.save_dir or self._auto_snapshot_dir()
             os.makedirs(snapshot_dir, exist_ok=True)
 
-        diagnostics.times = np.append(diagnostics.times, 0.0)
+        diagnostics.times = np.append(diagnostics.times, t_start)
         if config.save_every is not None:
             if config.save_to_disk and snapshot_dir:
-                np.save(os.path.join(snapshot_dir, "theta_00000_t0.0000.npy"), theta0)
+                np.savez_compressed(
+                    os.path.join(snapshot_dir, f"theta_00000_t{t_start:.4f}.npz"), theta=theta0
+                )
             else:
                 diagnostics.snapshots.append(theta0.copy())
 
@@ -208,6 +241,7 @@ class ScalarAdvectionDiffusionSolver:
         if config.output_frames and config.frame_interval is not None:
             frame_step = max(1, int(round(config.frame_interval / dt)))
 
+        start_time = time.perf_counter()
         for n in range(1, nsteps + 1):
             if integrator == "etdrk4":
                 Nv = self._nonlinear_term(theta_hat, ux, uy, F_hat)
@@ -239,11 +273,12 @@ class ScalarAdvectionDiffusionSolver:
                     nl_time_total += (time.perf_counter() - t0)
 
             tnow = n * dt
+            actual_time = t_start + tnow
             if config.save_every is not None and (n % config.save_every == 0 or n == nsteps):
                 theta_snapshot = ifft2(theta_hat).real.astype(self.dtype)
                 if config.save_to_disk and snapshot_dir:
-                    filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{tnow:.4f}.npy")
-                    np.save(filename, theta_snapshot)
+                    filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{actual_time:.4f}.npz")
+                    np.savez_compressed(filename, theta=theta_snapshot)
                     if snapshot_count == 0:
                         metadata = {
                             "N": self.grid.N,
@@ -259,19 +294,29 @@ class ScalarAdvectionDiffusionSolver:
                     snapshot_count += 1
                 else:
                     diagnostics.snapshots.append(theta_snapshot)
-                diagnostics.times = np.append(diagnostics.times, tnow)
+                diagnostics.times = np.append(diagnostics.times, actual_time)
 
             if frame_step is not None and (n % frame_step == 0 or n == nsteps):
                 diagnostics.frames.append(ifft2(theta_hat).real.astype(self.dtype))
 
-            if verbose and n % max(1, nsteps // 10) == 0:
-                print(f"  Step {n}/{nsteps} (t={tnow:.3f}/{t_end:.3f})")
+            if verbose and (n % progress_every == 0 or n == nsteps):
+                elapsed = time.perf_counter() - start_time
+                est_total = elapsed * nsteps / max(n, 1)
+                remaining = max(est_total - elapsed, 0.0)
+                per_step = elapsed / max(n, 1)
+                pct = 100.0 * n / nsteps
+                msg = (
+                    f"{pct:6.2f}% complete (t={actual_time:.3f}/{t_final:.3f}) | "
+                    f"elapsed: {_format_duration(elapsed)} | step: {per_step:0.3f}s | "
+                    f"ETA: {_format_duration(remaining)}"
+                )
+                self._log(msg, log_stream, log_to_stdout)
 
             grad_sq_curr = self._mean_grad_sq(theta_hat)
             diagnostics.grad_sq_integral += 0.5 * (grad_sq_prev + grad_sq_curr) * dt
             grad_sq_prev = grad_sq_curr
             # Append time-resolved diagnostics
-            ts_times.append(float(tnow))
+            ts_times.append(float(actual_time))
             ts_grad_sq.append(float(grad_sq_curr))
             ts_eps.append(float(2.0 * kappa * grad_sq_curr))
 
@@ -283,9 +328,10 @@ class ScalarAdvectionDiffusionSolver:
         diagnostics.dissipation_ts = np.asarray(ts_eps, dtype=self.dtype)
 
         if verbose:
-            print(f"Simulation complete. Final time: {t_end:.3f}")
+            msg = f"Simulation complete. Final time: {t_final:.3f}"
+            self._log(msg, log_stream, log_to_stdout)
             if snapshot_dir and snapshot_count > 0:
-                print(f"  Saved {snapshot_count} snapshots to: {snapshot_dir}/")
+                self._log(f"Saved {snapshot_count} snapshots to: {snapshot_dir}/", log_stream, log_to_stdout)
 
         # Attach profiling info if enabled
         if config.profile or config.profile_fft:
@@ -360,12 +406,17 @@ class ScalarAdvectionDiffusionSolver:
         uyn = np.asarray(uyn, dtype=self.dtype)
 
         dt, nsteps, kappa, t_end = self._resolve_time_controls(theta0, uxn, uyn, config)
+        t_start = float(getattr(config, "t_start", 0.0))
+        t_final = t_start + t_end
         diagnostics = SimulationDiagnostics(dt=dt, kappa=kappa, n_steps=nsteps)
         if config.output_frames:
             diagnostics.frames = []
 
         theta_hat = fft2(theta0).astype(self.cdtype)
         Llin = -kappa * self.grid.k2
+        log_stream = getattr(config, "log_stream", None)
+        log_to_stdout = bool(getattr(config, "log_to_stdout", True))
+        progress_every = max(1, int(getattr(config, "progress_interval", 100)))
 
         Gx, Gy = config.mean_grad
 
@@ -381,7 +432,7 @@ class ScalarAdvectionDiffusionSolver:
             return N_hat
 
         grad_sq_prev = self._mean_grad_sq(theta_hat)
-        ts_times: List[float] = [0.0]
+        ts_times: List[float] = [float(t_start)]
         ts_grad_sq: List[float] = [float(grad_sq_prev)]
         ts_eps: List[float] = [float(2.0 * kappa * grad_sq_prev)]
 
@@ -395,11 +446,11 @@ class ScalarAdvectionDiffusionSolver:
             snapshot_dir = config.save_dir or self._auto_snapshot_dir()
             os.makedirs(snapshot_dir, exist_ok=True)
 
-        diagnostics.times = np.append(diagnostics.times, 0.0)
+        diagnostics.times = np.append(diagnostics.times, t_start)
         if config.save_every is not None:
             theta_snapshot0 = ifft2(theta_hat).real.astype(self.dtype)
             if config.save_to_disk and snapshot_dir:
-                np.save(os.path.join(snapshot_dir, "theta_00000_t0.0000.npy"), theta_snapshot0)
+                np.savez_compressed(os.path.join(snapshot_dir, "theta_00000_t0.0000.npz"), theta=theta_snapshot0)
             else:
                 diagnostics.snapshots.append(theta_snapshot0)
 
@@ -407,6 +458,7 @@ class ScalarAdvectionDiffusionSolver:
         if config.output_frames and config.frame_interval is not None:
             frame_step = max(1, int(round(config.frame_interval / dt)))
 
+        start_time = time.perf_counter()
         for n in range(1, nsteps + 1):
             if integrator == "rk4":
                 # t_n
@@ -451,11 +503,12 @@ class ScalarAdvectionDiffusionSolver:
 
             tnow = n * dt
 
+            actual_time = t_start + tnow
             if config.save_every is not None and (n % config.save_every == 0 or n == nsteps):
                 theta_snapshot = ifft2(theta_hat).real.astype(self.dtype)
                 if config.save_to_disk and snapshot_dir:
-                    filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{tnow:.4f}.npy")
-                    np.save(filename, theta_snapshot)
+                    filename = os.path.join(snapshot_dir, f"theta_{snapshot_count:05d}_t{actual_time:.4f}.npz")
+                    np.savez_compressed(filename, theta=theta_snapshot)
                     if snapshot_count == 0:
                         metadata = {
                             "N": self.grid.N,
@@ -473,18 +526,28 @@ class ScalarAdvectionDiffusionSolver:
                     snapshot_count += 1
                 else:
                     diagnostics.snapshots.append(theta_snapshot)
-                diagnostics.times = np.append(diagnostics.times, tnow)
+                diagnostics.times = np.append(diagnostics.times, actual_time)
 
             if frame_step is not None and (n % frame_step == 0 or n == nsteps):
                 diagnostics.frames.append(ifft2(theta_hat).real.astype(self.dtype))
 
-            if verbose and n % max(1, nsteps // 10) == 0:
-                print(f"  Step {n}/{nsteps} (t={tnow:.3f}/{t_end:.3f})")
+            if verbose and (n % progress_every == 0 or n == nsteps):
+                elapsed = time.perf_counter() - start_time
+                est_total = elapsed * nsteps / max(n, 1)
+                remaining = max(est_total - elapsed, 0.0)
+                pct = 100.0 * n / nsteps
+                per_step = elapsed / max(n, 1)
+                msg = (
+                    f"{pct:6.2f}% complete (t={actual_time:.3f}/{t_final:.3f}) | "
+                    f"elapsed: {_format_duration(elapsed)} | step: {per_step:0.3f}s | "
+                    f"ETA: {_format_duration(remaining)}"
+                )
+                self._log(msg, log_stream, log_to_stdout)
 
             grad_sq_curr = self._mean_grad_sq(theta_hat)
             diagnostics.grad_sq_integral += 0.5 * (grad_sq_prev + grad_sq_curr) * dt
             grad_sq_prev = grad_sq_curr
-            ts_times.append(float(tnow))
+            ts_times.append(float(t_start + tnow))
             ts_grad_sq.append(float(grad_sq_curr))
             ts_eps.append(float(2.0 * kappa * grad_sq_curr))
 
@@ -495,9 +558,9 @@ class ScalarAdvectionDiffusionSolver:
         diagnostics.dissipation_ts = np.asarray(ts_eps, dtype=self.dtype)
 
         if verbose:
-            print(f"Simulation complete. Final time: {t_end:.3f}")
+            self._log(f"Simulation complete. Final time: {t_final:.3f}", log_stream, log_to_stdout)
             if snapshot_dir and snapshot_count > 0:
-                print(f"  Saved {snapshot_count} snapshots to: {snapshot_dir}/")
+                self._log(f"Saved {snapshot_count} snapshots to: {snapshot_dir}/", log_stream, log_to_stdout)
 
         return theta_final, diagnostics
 

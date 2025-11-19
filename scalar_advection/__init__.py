@@ -23,6 +23,15 @@ from .structure import (
 from .fft import FFT_BACKEND, set_fftw_threads, warm_fft_cache
 from .fractal import box_counting
 from .temporal import TemporalSFResult, measure_temporal_structure_function
+from .analysis_utils import (
+    ensure_dir,
+    plot_and_save_dissipation,
+    save_theta_velocity_frames,
+    sliding_log_slope_series,
+    plot_scalar_sf_with_slopes,
+    plot_yaglom_with_slopes,
+    yaglom_statistics,
+)
 
 __all__ = [
     "ScalarAdvectionAPI",
@@ -50,4 +59,11 @@ __all__ = [
     "box_counting",
     "TemporalSFResult",
     "measure_temporal_structure_function",
+    "ensure_dir",
+    "plot_and_save_dissipation",
+    "save_theta_velocity_frames",
+    "sliding_log_slope_series",
+    "plot_scalar_sf_with_slopes",
+    "plot_yaglom_with_slopes",
+    "yaglom_statistics",
 ]

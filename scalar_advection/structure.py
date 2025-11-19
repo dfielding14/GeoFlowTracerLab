@@ -591,7 +591,13 @@ def plot_structure_functions(
         for j, p in enumerate(orders):
             y = curves[j]
             color = colors[j % len(colors)]
-            ax.loglog(r, y, style, color=color, lw=1.8, alpha=0.9, label=fr"{label_prefix} p={p:g}")
+            if label_prefix.endswith("="):
+                label = rf"{label_prefix}{p:g}"
+            elif label_prefix:
+                label = rf"{label_prefix} p={p:g}"
+            else:
+                label = rf"p={p:g}"
+            ax.loglog(r, y, style, color=color, lw=1.8, alpha=0.9, label=label)
             x_range = None
             if fit_min_r is not None or fit_max_r is not None:
                 lo = fit_min_r if fit_min_r is not None else r.min()

@@ -48,12 +48,26 @@ from scalar_advection import (
 from scalar_advection.binning import find_ell_bin_edges
 from scalar_advection.fitting import PowerLawFit, best_powerlaw_fit
 from scalar_advection.structure import generate_displacements
-from matplotlib.ticker import FixedLocator, FuncFormatter
 
 
 DEFAULT_ORDERS: Tuple[int, ...] = (1, 2, 3, 4, 6, 8, 10)
 DEFAULT_N_ELL_BINS = 40
 DEFAULT_N_DISP = 4096
+
+
+def sliding_log_slope_series(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = (x > 0) & (y > 0)
+    x = x[mask]
+    y = y[mask]
+    if x.size < 2:
+        return np.array([]), np.array([])
+    lx = np.log(x)
+    ly = np.log(y)
+    centers = np.sqrt(x[:-1] * x[1:])
+    slopes = np.diff(ly) / np.diff(lx)
+    return centers, slopes
 
 
 def best_fixed_slope_segment(
@@ -590,7 +604,14 @@ def plot_yaglom(yaglom_data: dict, fname: Path) -> Tuple[float | None, PowerLawF
         x_range=fit_range,
     )
 
-    fig, ax = plt.subplots(figsize=(6.0, 4.5), dpi=160)
+    fig, (ax, ax_slope) = plt.subplots(
+        2,
+        1,
+        figsize=(6.0, 6.0),
+        dpi=160,
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.4, 1.0], "hspace": 0.08},
+    )
     ax.loglog(r, y, "o-", lw=1.6, label=r"$\langle | \delta u | | \delta \theta |^2 \rangle$")
     slope = None
     if fit is not None:
@@ -614,36 +635,30 @@ def plot_yaglom(yaglom_data: dict, fname: Path) -> Tuple[float | None, PowerLawF
     ax.set_ylabel(r"$\langle | \delta u | | \delta \theta |^2 \rangle$")
     ax.grid(True, which="both", ls=":", lw=0.6)
 
-    def to_fraction(x):
-        return (x * dx) / L
+    def sliding_log_slope(rvals: np.ndarray, yvals: np.ndarray, window: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+        mask = (rvals > 0) & (yvals > 0)
+        rvals = rvals[mask]
+        yvals = yvals[mask]
+        if rvals.size < window:
+            return np.array([]), np.array([])
+        lr = np.log(rvals)
+        ly = np.log(yvals)
+        slopes = []
+        centers = []
+        for i in range(rvals.size - window + 1):
+            idx = slice(i, i + window)
+            m, _ = np.polyfit(lr[idx], ly[idx], 1)
+            slopes.append(m)
+            centers.append(np.exp(np.mean(lr[idx])))
+        return np.array(centers), np.array(slopes)
 
-    def from_fraction(x):
-        return (x * L) / dx
+    centers, slopes = sliding_log_slope(r, y, window=4)
+    ax_slope.semilogx(centers, slopes, "-", lw=1.6)
+    ax_slope.set_xlabel(r"separation $\ell / \Delta x$")
+    ax_slope.set_ylabel(r"$d\log Y / d\log \ell$")
+    ax_slope.grid(True, which="both", ls=":", lw=0.6)
 
-    ax_top = ax.secondary_xaxis("top", functions=(to_fraction, from_fraction))
-    ax_top.set_xlabel(r"$\ell / L$")
-    ax_top.set_xscale("log")
-
-    frac_limits = to_fraction(np.array(ax.get_xlim()))
-    ax_top.set_xlim(frac_limits[0], frac_limits[1])
-
-    n_levels = int(np.ceil(np.log2(N)))
-    candidate = 1.0 / (2.0 ** np.arange(1, n_levels + 1, dtype=float))
-    valid = candidate[(candidate >= min(frac_limits)) & (candidate <= max(frac_limits))]
-    if valid.size:
-        ax_top.xaxis.set_major_locator(FixedLocator(valid))
-
-        def _fmt_fraction(val: float, _pos: int) -> str:
-            if val <= 0:
-                return ""
-            denom = int(round(1.0 / val))
-            if denom > 0 and np.isclose(val, 1.0 / denom, rtol=1e-6, atol=1e-9):
-                return rf"$1/{denom}$"
-            return f"{val:.3g}"
-
-        ax_top.xaxis.set_major_formatter(FuncFormatter(_fmt_fraction))
-
-    ax.legend(frameon=False)
+    ax.legend(frameon=False, loc="best")
     fig.savefig(fname, bbox_inches="tight")
     plt.close(fig)
     return slope, slope_one_fit
