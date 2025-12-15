@@ -1,15 +1,43 @@
 #!/bin/bash
 #SBATCH --job-name=alphaKappa
+#SBATCH --partition=cca
+#SBATCH --constraint=rome
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=128
-#SBATCH --time=24:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=128
+#SBATCH --time=168:00:00
 #SBATCH --output=alpha_kappa_%j.out
 #SBATCH --error=alpha_kappa_%j.err
 
-# Optional: module load commands go here, e.g.
-# module load python/3.11
-
 set -euo pipefail
+
+# ----------------------------------------------------------------------
+# Rusty environment setup (modules 2.4 + gcc 13 + python 3.11)
+# ----------------------------------------------------------------------
+module purge
+module load modules/2.4-20250724
+module load gcc/13.3.0
+module load python/3.11.11
+module load fftw/3.3.10
+
+VENV_PATH=${VENV_PATH:-$HOME/.venvs/geoflow}
+if [ ! -d "$VENV_PATH" ]; then
+  echo "Virtualenv not found at $VENV_PATH" >&2
+  exit 1
+fi
+source "${VENV_PATH}/bin/activate"
+PYTHON_BIN="${VENV_PATH}/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+  echo "Python executable not found at $PYTHON_BIN" >&2
+  exit 1
+fi
+
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-${N_WORKERS:-128}}
+export NUMBA_NUM_THREADS=${NUMBA_NUM_THREADS:-$OMP_NUM_THREADS}
+TMP_BASE=${SLURM_TMPDIR:-${TMPDIR:-/tmp}}
+export MPLCONFIGDIR=${MPLCONFIGDIR:-$TMP_BASE/mpl}
+mkdir -p "$MPLCONFIGDIR"
+
 
 : "${ALPHA:?Need ALPHA}"
 : "${KAPPA:?Need KAPPA}"
@@ -39,7 +67,7 @@ fi
 
 cd "$SLURM_SUBMIT_DIR"
 
-srun python -u experiments/run_single_alpha_kappa.py \
+srun "$PYTHON_BIN" -u experiments/run_single_alpha_kappa.py \
     --alpha "${ALPHA}" \
     --kappa "${KAPPA}" \
     --grid "${GRID}" \

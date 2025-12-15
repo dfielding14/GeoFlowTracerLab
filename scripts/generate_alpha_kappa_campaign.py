@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate sbatch commands for the 4096^2 alpha–kappa production campaign."""
+"""Generate sbatch commands for the alpha–kappa production campaign."""
 
 from __future__ import annotations
 
@@ -82,14 +82,14 @@ def build_python_command(args, alpha: float, kappa: float, tag: str, seed: int) 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate commands for the 4096^2 alpha–kappa campaign.")
-    parser.add_argument("--grid", type=int, default=4096)
-    parser.add_argument("--t-end", type=float, default=20.0)
-    parser.add_argument("--n-save", type=int, default=200)
-    parser.add_argument("--n-workers", type=int, default=128)
-    parser.add_argument("--cfl", type=float, default=0.6)
+    parser = argparse.ArgumentParser(description="Generate commands for the alpha–kappa campaign.")
+    parser.add_argument("--grid", type=int, default=1024)
+    parser.add_argument("--t-end", type=float, default=40.0)
+    parser.add_argument("--n-save", type=int, default=400)
+    parser.add_argument("--n-workers", type=int, default=64)
+    parser.add_argument("--cfl", type=float, default=0.8)
     parser.add_argument("--integrator", default="etdrk4")
-    parser.add_argument("--dtype", default="float64")
+    parser.add_argument("--dtype", default="float32")
     parser.add_argument("--output-root", type=Path, default=Path("experimental_results") / "alpha_kappa_runs")
     parser.add_argument("--lam-min", type=float, default=2.0)
     parser.add_argument("--lam-max", type=float)
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("campaigns") / "alpha_kappa_4096",
+        default=Path("campaigns") / "alpha_kappa_1024",
         help="Directory where the command list and manifest will be written.",
     )
     args = parser.parse_args(argv)
@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     lam_max_val = args.lam_max if args.lam_max is not None else args.grid
 
     for idx, (alpha, kappa) in enumerate(itertools.product(alpha_vals, kappa_vals), start=1):
-        seed = args.velocity_seed_base + idx - 1
+        seed = args.velocity_seed_base  # Same seed for all runs
         tag = build_tag(alpha, kappa, args.grid, args.t_end, args.n_workers)
         env = {
             "ALPHA": f"{alpha:.10f}",

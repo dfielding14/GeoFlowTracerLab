@@ -20,6 +20,7 @@ from .structure import (
     structure_functions,
     structure_functions_from_pair_pdf,
 )
+from .structure_fft import structure_functions_fft
 from .fft import FFT_BACKEND, set_fftw_threads, warm_fft_cache
 from .fractal import box_counting
 from .temporal import TemporalSFResult, measure_temporal_structure_function
@@ -49,6 +50,7 @@ __all__ = [
     "kinetic_energy_spectrum",
     "plot_energy_spectrum",
     "structure_functions",
+    "structure_functions_fft",
     "plot_structure_functions",
     "pair_increment_pdf",
     "plot_pair_increment_pdf",

@@ -37,7 +37,7 @@ def save_theta_velocity_frames(
     spd = np.hypot(ux, uy)
     vmax = float(np.percentile(spd, 99.0)) if np.isfinite(spd).any() else float(np.max(spd))
     speed_cmap = cmr.neutral if cmr is not None else mpl_cm.viridis
-    contour_cmap = cmr.tropical if cmr is not None else mpl_cm.coolwarm
+    contour_cmap = cmr.neon if cmr is not None else mpl_cm.coolwarm
     for idx, tnow in enumerate(times):
         if idx >= len(snapshots):
             break

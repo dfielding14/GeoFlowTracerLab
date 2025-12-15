@@ -108,9 +108,21 @@ def warm_fft_cache(shape, dtype=np.float64) -> None:
     dtype : np.dtype
         Real-space dtype to emulate (np.float64 by default).
     """
-    arr = np.zeros(shape, dtype=dtype)
-    coeffs = fft2(arr)
+    # Determine complex dtype matching the real dtype
+    if dtype == np.float32 or dtype == "float32":
+        cdtype = np.complex64
+    else:
+        cdtype = np.complex128
+
+    # Warm real→complex (forward FFT from real data)
+    arr_real = np.zeros(shape, dtype=dtype)
+    coeffs = fft2(arr_real)
     _ = ifft2(coeffs)
+
+    # Warm complex→complex (inverse FFT from spectral derivatives)
+    arr_complex = np.zeros(shape, dtype=cdtype)
+    _ = fft2(arr_complex)
+    _ = ifft2(arr_complex)
 
 
 __all__ = [

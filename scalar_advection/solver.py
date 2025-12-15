@@ -369,8 +369,14 @@ class ScalarAdvectionDiffusionSolver:
         else:
             denom = np.max(np.abs(ux)) + np.max(np.abs(uy)) + 1e-14
             dt_adv = config.cfl * self.grid.dx / denom
-            dt_diff = config.cfl * self.grid.dx**2 / (4 * kappa + 1e-14)
-            dt = float(min(dt_adv, dt_diff))
+            # ETDRK4 handles diffusion exactly via matrix exponential,
+            # so no diffusion stability limit is needed
+            integrator = (config.integrator or "etdrk4").lower()
+            if integrator == "etdrk4":
+                dt = float(dt_adv)
+            else:
+                dt_diff = config.cfl * self.grid.dx**2 / (4 * kappa + 1e-14)
+                dt = float(min(dt_adv, dt_diff))
 
         if config.t_end is not None:
             t_end = config.t_end
