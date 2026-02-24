@@ -253,6 +253,21 @@ def _tapered_ring_window(K: np.ndarray, kmin: float, kmax: float, taper_frac: fl
     return window
 
 
+def _symmetric_bool_mask(rng: np.random.Generator, N: int, sparsity: float) -> np.ndarray:
+    """Build a Hermitian-symmetric Bernoulli mask for conjugate Fourier pairs."""
+    if not 0.0 < float(sparsity) < 1.0:
+        return np.ones((N, N), dtype=bool) if sparsity <= 0.0 else np.zeros((N, N), dtype=bool)
+
+    I, J = np.meshgrid(np.arange(N), np.arange(N), indexing="ij")
+    I2 = (-I) % N
+    J2 = (-J) % N
+    keep = (I < I2) | ((I == I2) & (J <= J2))
+
+    mask = np.zeros((N, N), dtype=bool)
+    mask[keep] = rng.random((N, N), dtype=np.float64)[keep] > float(sparsity)
+    return mask | mask[::-1, ::-1]
+
+
 def generate_divfree_field(
     N: int = 256,
     lam_min: float = 8,
@@ -308,8 +323,7 @@ def generate_divfree_field(
         for Wk in wavelet_kernels:
             Zk = np.fft.fft2(rng.normal(size=(N, N)))
             if sparsity > 0:
-                mask = rng.random((N, N)) > sparsity
-                Zk *= mask
+                Zk *= _symmetric_bool_mask(rng, N, sparsity)
             Psi_k += Aj * Wk * Zk
 
     # A hard spectral cut introduces ringing in real space; taper to suppress that.
@@ -319,9 +333,8 @@ def generate_divfree_field(
         # Widen the high-k cutoff so the smallest scales aren't artificially removed.
         kmax_eff = min(float(K.max()), float(kmax) * np.sqrt(2.0))
 
-    # window = _tapered_ring_window(K, kmin, kmax_eff, taper_frac=taper_frac)
-    # print(f"Windowing with kmin={kmin}, kmax={kmax_eff}, taper_frac={taper_frac}")
-    # Psi_k *= window
+    window = _tapered_ring_window(K, kmin, kmax_eff, taper_frac=taper_frac)
+    Psi_k *= window
 
     Ux_k = 1j * KY * Psi_k
     Uy_k = -1j * KX * Psi_k
@@ -329,7 +342,7 @@ def generate_divfree_field(
     uy = np.fft.ifft2(Uy_k).real
 
     spd = np.hypot(ux, uy)
-    cur = spd.std()
+    cur = np.sqrt(np.mean(spd**2))
     if cur > 0:
         scale = amp / cur
         ux *= scale
