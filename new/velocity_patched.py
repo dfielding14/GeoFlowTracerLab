@@ -229,7 +229,23 @@ def _haar_Wk(N, lam, mode: str = "diag"):
 
 
 def _tapered_ring_window(K: np.ndarray, kmin: float, kmax: float, taper_frac: float = 0.0) -> np.ndarray:
-    """Cosine-tapered ring window in |k| between [kmin, kmax]."""
+    """Cosine-tapered ring window in |k| between [kmin, kmax].
+
+    Parameters
+    ----------
+    K : array
+        |k| magnitude grid (same shape as Fourier arrays).
+    kmin, kmax : float
+        Inner/outer cutoff in the same units as K.
+    taper_frac : float
+        Fractional width of the taper region near each cutoff. Use 0 for a hard cutoff.
+        A good default is ~0.1–0.2.
+
+    Returns
+    -------
+    window : array
+        Values in [0,1].
+    """
     kmin = float(kmin)
     kmax = float(kmax)
     window = np.ones_like(K, dtype=np.float64)
@@ -238,12 +254,14 @@ def _tapered_ring_window(K: np.ndarray, kmin: float, kmax: float, taper_frac: fl
 
     tf = float(taper_frac)
     if tf > 0.0:
+        # Low-k ramp
         if kmin > 0.0:
             lo = (K >= kmin) & (K < kmin * (1.0 + tf))
             if np.any(lo):
                 phi = (K[lo] - kmin) / (kmin * tf)
                 window[lo] = 0.5 * (1.0 - np.cos(np.pi * phi))
 
+        # High-k ramp
         if kmax > 0.0:
             hi = (K <= kmax) & (K > kmax * (1.0 - tf))
             if np.any(hi):
@@ -251,7 +269,6 @@ def _tapered_ring_window(K: np.ndarray, kmin: float, kmax: float, taper_frac: fl
                 window[hi] *= 0.5 * (1.0 - np.cos(np.pi * phi))
 
     return window
-
 
 def generate_divfree_field(
     N: int = 256,
@@ -282,10 +299,11 @@ def generate_divfree_field(
     if lam_ref is None:
         lam_ref = np.sqrt(lam_min * lam_max)
     k_ref = 2 * np.pi / lam_ref
-    octaves = float(np.log2(lam_max / lam_min))
-    spo = max(1, int(scales_per_octave))
-    n_scales = max(1, int(np.ceil(octaves * spo)) + 1)
-    lams = lam_min * 2.0 ** np.linspace(0.0, octaves, n_scales)
+
+octaves = float(np.log2(lam_max / lam_min))
+spo = max(1, int(scales_per_octave))
+n_scales = max(1, int(np.ceil(octaves * spo)) + 1)
+lams = lam_min * 2.0 ** np.linspace(0.0, octaves, n_scales)
     Psi_k = np.zeros((N, N), dtype=np.complex128)
 
     # If `alpha` is provided, map to an equivalent spectral slope used here
@@ -293,35 +311,39 @@ def generate_divfree_field(
     if alpha is not None:
         slope = -(2.0 * float(alpha) + 1.0)
 
-    wavelet_l = wavelet.lower()
-    for lam in lams:
-        kj = 2 * np.pi / lam
-        Aj = (kj / k_ref) ** ((slope - 1.0) / 2.0)
 
-        if wavelet_l.startswith("mex"):
-            wavelet_kernels = (_mexhat_Wk(K, lam, N),)
-        elif wavelet_l.startswith("haar"):
-            wavelet_kernels = tuple(_haar_Wk(N, lam, mode=m) for m in haar_modes)
-        else:
-            raise ValueError("wavelet must be 'mexh' or 'haar'.")
+for lam in lams:
+    kj = 2 * np.pi / lam
+    Aj = (kj / k_ref) ** ((slope - 1.0) / 2.0)
 
-        for Wk in wavelet_kernels:
-            Zk = np.fft.fft2(rng.normal(size=(N, N)))
-            if sparsity > 0:
-                mask = rng.random((N, N)) > sparsity
-                Zk *= mask
-            Psi_k += Aj * Wk * Zk
+    if wavelet.lower().startswith("mex"):
+        wavelet_kernels = (_mexhat_Wk(K, lam, N),)
+    elif wavelet.lower().startswith("haar"):
+        # A proper 2D Haar basis has three orientations per scale.
+        # Summing them improves isotropy and (crucially) avoids chopping
+        # off the smallest-scale energy when using a radial k-band cutoff.
+        wavelet_kernels = tuple(_haar_Wk(N, lam, mode=m) for m in haar_modes)
+    else:
+        raise ValueError("wavelet must be 'mexh' or 'haar'.")
 
-    # A hard spectral cut introduces ringing in real space; taper to suppress that.
-    kmax_eff = float(kmax)
-    if wavelet_l.startswith("haar"):
-        # The diagonal Haar wavelet has its strongest energy near |k| ~ sqrt(2) * 2π/λ.
-        # Widen the high-k cutoff so the smallest scales aren't artificially removed.
-        kmax_eff = min(float(K.max()), float(kmax) * np.sqrt(2.0))
+    for Wk in wavelet_kernels:
+        Zk = np.fft.fft2(rng.normal(size=(N, N)))
+        if sparsity > 0:
+            mask = rng.random((N, N)) > sparsity
+            Zk *= mask
+        Psi_k += Aj * Wk * Zk
 
-    # window = _tapered_ring_window(K, kmin, kmax_eff, taper_frac=taper_frac)
-    # print(f"Windowing with kmin={kmin}, kmax={kmax_eff}, taper_frac={taper_frac}")
-    # Psi_k *= window
+
+# A hard spectral cut introduces ringing (and therefore curvature) in real-space
+# structure functions. Use a cosine-tapered band to suppress that.
+kmax_eff = float(kmax)
+if wavelet.lower().startswith("haar"):
+    # The diagonal Haar wavelet has its strongest energy near |k| ~ sqrt(2) * 2π/λ.
+    # Widen the high-k cutoff so the smallest scales aren't artificially removed.
+    kmax_eff = min(float(K.max()), float(kmax) * np.sqrt(2.0))
+
+window = _tapered_ring_window(K, kmin, kmax_eff, taper_frac=taper_frac)
+Psi_k *= window
 
     Ux_k = 1j * KY * Psi_k
     Uy_k = -1j * KX * Psi_k

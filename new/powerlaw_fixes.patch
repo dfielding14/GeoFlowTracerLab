@@ -1,0 +1,279 @@
+--- velocity.py
++++ velocity.py.patched
+@@ -176,25 +176,99 @@
+     return Wk
+ 
+ 
+-def _haar_Wk(N, lam):
++def _haar_Wk(N, lam, mode: str = "diag"):
++    """
++    Discrete 2D Haar wavelet in Fourier space.
++
++    Parameters
++    ----------
++    N : int
++        Grid size (NxN).
++    lam : float
++        Spatial scale (in grid units / pixels).
++    mode : {'diag','h','v'}
++        Which 2D Haar wavelet to use:
++          - 'h': horizontal (sign flip across x / left-right)
++          - 'v': vertical   (sign flip across y / top-bottom)
++          - 'diag': diagonal checkerboard (sign flip in both x and y)
++
++    Notes
++    -----
++    For an orthogonal 2D Haar basis you need all three orientations at each scale.
++    """
+     ksz = max(2, int(round(lam)))
+     if ksz % 2:
+         ksz += 1
+     m = ksz // 2
+     patch = np.empty((ksz, ksz), float)
+-    patch[:m, :m] = 1.0
+-    patch[:m, m:] = -1.0
+-    patch[m:, :m] = -1.0
+-    patch[m:, m:] = 1.0
++
++    mode_l = mode.lower()
++    if mode_l in ("diag", "d", "dd"):
++        patch[:m, :m] = 1.0
++        patch[:m, m:] = -1.0
++        patch[m:, :m] = -1.0
++        patch[m:, m:] = 1.0
++    elif mode_l in ("h", "x", "horizontal"):
++        patch[:, :m] = 1.0
++        patch[:, m:] = -1.0
++    elif mode_l in ("v", "y", "vertical"):
++        patch[:m, :] = 1.0
++        patch[m:, :] = -1.0
++    else:
++        raise ValueError("mode must be 'diag', 'h', or 'v'")
++
+     patch /= np.linalg.norm(patch) + 1e-30
+ 
+     wN = np.zeros((N, N), float)
+     c0 = N // 2 - m
+     wN[c0 : c0 + ksz, c0 : c0 + ksz] = patch
+     Wk = np.fft.fft2(np.fft.ifftshift(wN))
++    # L2-normalize so different scales have comparable energy before Aj scaling
+     Wk /= np.sqrt(np.sum(np.abs(Wk) ** 2) / (N * N) + 1e-30)
+     return Wk
+ 
++
++def _tapered_ring_window(K: np.ndarray, kmin: float, kmax: float, taper_frac: float = 0.0) -> np.ndarray:
++    """Cosine-tapered ring window in |k| between [kmin, kmax].
++
++    Parameters
++    ----------
++    K : array
++        |k| magnitude grid (same shape as Fourier arrays).
++    kmin, kmax : float
++        Inner/outer cutoff in the same units as K.
++    taper_frac : float
++        Fractional width of the taper region near each cutoff. Use 0 for a hard cutoff.
++        A good default is ~0.1–0.2.
++
++    Returns
++    -------
++    window : array
++        Values in [0,1].
++    """
++    kmin = float(kmin)
++    kmax = float(kmax)
++    window = np.ones_like(K, dtype=np.float64)
++    window[K < kmin] = 0.0
++    window[K > kmax] = 0.0
++
++    tf = float(taper_frac)
++    if tf > 0.0:
++        # Low-k ramp
++        if kmin > 0.0:
++            lo = (K >= kmin) & (K < kmin * (1.0 + tf))
++            if np.any(lo):
++                phi = (K[lo] - kmin) / (kmin * tf)
++                window[lo] = 0.5 * (1.0 - np.cos(np.pi * phi))
++
++        # High-k ramp
++        if kmax > 0.0:
++            hi = (K <= kmax) & (K > kmax * (1.0 - tf))
++            if np.any(hi):
++                phi = (kmax - K[hi]) / (kmax * tf)
++                window[hi] *= 0.5 * (1.0 - np.cos(np.pi * phi))
++
++    return window
+ 
+ def generate_divfree_field(
+     N: int = 256,
+@@ -204,6 +278,9 @@
+     *,
+     alpha: Optional[float] = None,
+     wavelet: str = "mexh",
++    scales_per_octave: int = 1,
++    taper_frac: float = 0.0,
++    haar_modes: Tuple[str, ...] = ("h", "v", "diag"),
+     lam_ref: Optional[float] = None,
+     amp: float = 1.0,
+     sparsity: float = 0.0,
+@@ -222,8 +299,11 @@
+     if lam_ref is None:
+         lam_ref = np.sqrt(lam_min * lam_max)
+     k_ref = 2 * np.pi / lam_ref
+-    n_scales = max(1, int(np.ceil(np.log2(lam_max / lam_min))) + 1)
+-    lams = lam_min * 2.0 ** np.linspace(0, np.log2(lam_max / lam_min), n_scales)
++
++octaves = float(np.log2(lam_max / lam_min))
++spo = max(1, int(scales_per_octave))
++n_scales = max(1, int(np.ceil(octaves * spo)) + 1)
++lams = lam_min * 2.0 ** np.linspace(0.0, octaves, n_scales)
+     Psi_k = np.zeros((N, N), dtype=np.complex128)
+ 
+     # If `alpha` is provided, map to an equivalent spectral slope used here
+@@ -231,23 +311,39 @@
+     if alpha is not None:
+         slope = -(2.0 * float(alpha) + 1.0)
+ 
+-    for lam in lams:
+-        if wavelet.lower().startswith("mex"):
+-            Wk = _mexhat_Wk(K, lam, N)
+-        elif wavelet.lower().startswith("haar"):
+-            Wk = _haar_Wk(N, lam)
+-        else:
+-            raise ValueError("wavelet must be 'mexh' or 'haar'.")
+-        kj = 2 * np.pi / lam
+-        Aj = (kj / k_ref) ** ((slope - 1.0) / 2.0)
++
++for lam in lams:
++    kj = 2 * np.pi / lam
++    Aj = (kj / k_ref) ** ((slope - 1.0) / 2.0)
++
++    if wavelet.lower().startswith("mex"):
++        wavelet_kernels = (_mexhat_Wk(K, lam, N),)
++    elif wavelet.lower().startswith("haar"):
++        # A proper 2D Haar basis has three orientations per scale.
++        # Summing them improves isotropy and (crucially) avoids chopping
++        # off the smallest-scale energy when using a radial k-band cutoff.
++        wavelet_kernels = tuple(_haar_Wk(N, lam, mode=m) for m in haar_modes)
++    else:
++        raise ValueError("wavelet must be 'mexh' or 'haar'.")
++
++    for Wk in wavelet_kernels:
+         Zk = np.fft.fft2(rng.normal(size=(N, N)))
+         if sparsity > 0:
+             mask = rng.random((N, N)) > sparsity
+             Zk *= mask
+         Psi_k += Aj * Wk * Zk
+ 
+-    band = (K >= kmin) & (K <= kmax)
+-    Psi_k *= band
++
++# A hard spectral cut introduces ringing (and therefore curvature) in real-space
++# structure functions. Use a cosine-tapered band to suppress that.
++kmax_eff = float(kmax)
++if wavelet.lower().startswith("haar"):
++    # The diagonal Haar wavelet has its strongest energy near |k| ~ sqrt(2) * 2π/λ.
++    # Widen the high-k cutoff so the smallest scales aren't artificially removed.
++    kmax_eff = min(float(K.max()), float(kmax) * np.sqrt(2.0))
++
++window = _tapered_ring_window(K, kmin, kmax_eff, taper_frac=taper_frac)
++Psi_k *= window
+ 
+     Ux_k = 1j * KY * Psi_k
+     Uy_k = -1j * KX * Psi_k
+
+--- structure.py
++++ structure.py.patched
+@@ -95,7 +95,8 @@
+ def radial_profile_from_map(arr2d: Array, ell_edges: Array) -> Tuple[Array, Array]:
+     ny, nx = arr2d.shape
+     y, x = np.indices((ny, nx))
+-    cy, cx = (ny - 1) / 2.0, (nx - 1) / 2.0
++    # For fftshift'ed maps on even grids, the zero-lag is at index N//2.
++    cy, cx = ny // 2, nx // 2
+     r = np.hypot(x - cx, y - cy)
+     n_bins = len(ell_edges) - 1
+     bin_idx = np.digitize(r.ravel(), ell_edges) - 1
+@@ -103,7 +104,7 @@
+     sums = np.bincount(bin_idx[valid], weights=arr2d.ravel()[valid], minlength=n_bins)
+     counts = np.bincount(bin_idx[valid], minlength=n_bins)
+     prof = sums / np.maximum(1, counts)
+-    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++    centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+     return centers, prof
+ 
+ 
+@@ -162,7 +163,7 @@
+             sums[j, b] += float(np.mean(pow_buf))
+         counts[b] += 1
+     S = sums / np.maximum(1, counts)
+-    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++    centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+     return {"r": centers, "S": S, "counts": counts}
+ 
+ 
+@@ -210,7 +211,7 @@
+             np.power(np.abs(tran_), p, out=pow_buf_tran)
+             sums_tran[j, b] += float(np.mean(pow_buf_tran))
+         counts[b] += 1
+-    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++    centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+     return {
+         "r": centers,
+         "mag": sums_mag / np.maximum(1, counts),
+@@ -249,7 +250,7 @@
+         for j, p in enumerate(orders):
+             sums[j, b] += float(np.mean(adiff**p))
+         counts[b] += 1
+-    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++    centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+     return {"r": centers, "S": sums / np.maximum(1, counts), "counts": counts}
+ 
+ 
+@@ -327,7 +328,7 @@
+             sums_tran[j, b] += float(np.mean(np.abs(tran_mag) ** p))
+         counts[b] += 1
+ 
+-    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++    centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+     return {
+         "r": centers,
+         "mag": sums_mag / np.maximum(1, counts),
+@@ -512,7 +513,7 @@
+             tran = np.vstack(
+                 [np.bincount(bins, weights=out_tran_d[:, j], minlength=n_bins) for j in range(n_orders)]
+             ) / np.maximum(1, counts)
+-            centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++            centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+             out = {"r": centers, "mag": mag, "long": long, "tran": tran, "counts": counts}
+         else:
+             if ndim == 2:
+@@ -535,7 +536,7 @@
+             S = np.vstack(
+                 [np.bincount(bins, weights=out_d[:, j], minlength=n_bins) for j in range(n_orders)]
+             ) / np.maximum(1, counts)
+-            centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++            centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+             out = {"r": centers, "S": S, "counts": counts}
+         else:
+             if ndim == 2:
+
+--- structure_fft.py
++++ structure_fft.py.patched
+@@ -57,7 +57,7 @@
+ 
+     prof = sums / np.maximum(1, counts)
+ 
+-    centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++    centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+     return centers, prof
+ 
+ 
+@@ -156,7 +156,7 @@
+ 
+     ell_edges = find_ell_bin_edges(r_min, r_max, n_ell_bins)
+     n_bins = len(ell_edges) - 1
+-    r_centers = 0.5 * (ell_edges[:-1] + ell_edges[1:])
++    r_centers = np.sqrt(ell_edges[:-1] * ell_edges[1:])
+     n_orders = len(orders_int)
+     S_profiles = np.zeros((n_orders, n_bins), dtype=np.float64)
+ 
